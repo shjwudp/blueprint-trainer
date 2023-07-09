@@ -1,0 +1,40 @@
+What It Is:
+  GPT2 training blueprint
+
+blueprint:
+  model: "gpt2"
+  optimizer: "AdamW"
+  learning_rate:
+    base: 1e-4
+    scheduler: "inverse_sqrt"
+    num_warmup_steps: 1000
+
+  dataset:
+  - path: "wikitext"
+    name: "wikitext-103-v1"
+
+  batch_size_plan:
+  - batch_size: 32
+    training_nsteps: 10000
+  - batch_size: 64
+    training_nsteps: 10000
+  - batch_size: 128
+    training_nsteps: 20000
+  - batch_size: 256
+    training_nsteps: 20000
+  - batch_size: 512
+    training_nsteps: -1
+
+  logging:
+    path: "./gpt2_training_log"
+    interval_by_step: 1
+    interval_by_time: "1h"
+
+  checkpoint:
+    path: "./gpt2_checkpoints"
+    interval_by_step: 1000
+    interval_by_time: "1h"
+
+  evaluation:
+    interval_by_step: 1000
+    interval_by_time: "1h"
