@@ -1,6 +1,7 @@
 from dataset_utils import prepare_wikitext_dataset
 
 import time
+import os
 
 import torch
 import transformers
@@ -27,15 +28,15 @@ blueprint:
     name: "wikitext-103-v1"
 
   batch_size_plan:
+  - batch_size: 2
+    training_nsteps: 100
+  - batch_size: 4
+    training_nsteps: 100
+  - batch_size: 8
+    training_nsteps: 200
+  - batch_size: 16
+    training_nsteps: 200
   - batch_size: 32
-    training_nsteps: 100
-  - batch_size: 64
-    training_nsteps: 100
-  - batch_size: 128
-    training_nsteps: 200
-  - batch_size: 256
-    training_nsteps: 200
-  - batch_size: 512
     training_nsteps: -1
 
   logging:
@@ -66,10 +67,12 @@ def get_gpt2_and_tokenizer(model_path):
 
 def model_forward(model, batch):
     ids = batch["input_ids"].to(device)
-    output = model(ids=ids, return_loss=True, return_metrics=True)
+    labels = batch["labels"].to(device)
+    print(ids.shape)
+    output = model(input_ids=ids, labels=labels, return_dict=True)
     loss = output.loss
 
-    return loss, output.metrics
+    return loss, {}
 
 
 def return_model_eval(eval_dataset):
@@ -98,7 +101,7 @@ def save_checkpoint(model, optimizer, lr_scheduler):
     pass
 
 
-def log(metrics, commit=True):
+def log(metrics, step=None, commit=True):
     pass
 
 
@@ -126,7 +129,11 @@ model_eval_func = return_model_eval(wikitext["validation"])
 optimizer = get_optimizer(gpt2, blueprint.optimizer, blueprint.learning_rate)
 lr_scheduler = get_lr_scheduler(optimizer, blueprint.learning_rate)
 train_dataset = wikitext["train"]
-dataloader_kwargs = dict(generator=torch.Generator(device=device))
+dataloader_kwargs = dict(
+    generator=torch.Generator(device=device),
+    collate_fn=default_data_collator,
+    num_workers=os.cpu_count(),
+)
 
 trainer.prepare(
     model_forward=model_forward,
@@ -138,4 +145,5 @@ trainer.prepare(
     dataloader_kwargs=dataloader_kwargs,
     lr_scheduler=lr_scheduler,
 )
+trainer.test_blueprint(gpt2)
 trainer.training_from_scratch(gpt2)

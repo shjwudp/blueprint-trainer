@@ -108,9 +108,9 @@ class Trainer:
         # data loader initialization
         n_dataloader = []
         blueprint = self.blueprint
-        for plan in blueprint["batch_size_plan"]:
-            bs, train_step = plan["batch_size"], plan["training_nsteps"]
-            if train_step == -1 or train_step > len(train_dataset)//bs:
+        for plan in blueprint.batch_size_plan:
+            bs, train_step = plan.batch_size, plan.training_nsteps
+            if train_step == -1 or bs*train_step > len(train_dataset):
                 dataloder = DataLoader(
                     train_dataset,
                     batch_size=bs,
@@ -119,8 +119,12 @@ class Trainer:
                 n_dataloader.append(dataloder)
                 break
 
-            stage_dataset = Subset(train_dataset, torch.arange(bs*train_step))
-            train_dataset = Subset(train_dataset, torch.arange(bs*train_step, len(train_dataset)))
+            stage_dataset = Subset(train_dataset, range(bs*train_step))
+            train_dataset = Subset(train_dataset, range(bs*train_step, len(train_dataset)))
+            # for x in train_dataset:
+            #     assert len(x["input_ids"]) == 512
+            # x = train_dataset[0]
+            # print(x, len(x["input_ids"]), len(x["attention_mask"]), len(x["labels"]))
 
             dataloder = DataLoader(
                 stage_dataset,
@@ -133,12 +137,40 @@ class Trainer:
     def print_blueprint(self):
         # TODO: Many blueprint details need to be improved, 
         # including time estimation, data consumption-time curve
-        pass 
+        pass
+
+    def test_blueprint(self, model):
+        optimizer = self.optimizer
+        n_dataloader = self.n_dataloader
+        model_forward = self.model_forward
+        model_eval = self.model_eval
+
+        # Memory Stress Test
+        completed_steps = 0
+        optimizer.zero_grad()
+        next_threshold_of_data_amount = 0
+        for dl in n_dataloader:
+            for batch in dl:
+                the_amount_of_data = sum(x.numel() for x in batch.values())
+
+                if the_amount_of_data <= next_threshold_of_data_amount:
+                    continue
+                next_threshold_of_data_amount = the_amount_of_data
+
+                loss, _ = model_forward(model, batch)
+                loss.backward()
+
+                optimizer.step()
+                optimizer.zero_grad()
+                completed_steps += 1
+
+        model_eval(model)
+        print("test is ok!")
 
     def training_from_scratch(self, model):
         optimizer = self.optimizer
         n_dataloader = self.n_dataloader
-        model_forward = model_forward
+        model_forward = self.model_forward
         log = self.log
         blueprint = self.blueprint
         model_eval = self.model_eval
