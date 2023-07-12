@@ -54,12 +54,12 @@ blueprint:
     interval_by_time: "1h"
 """
 
-device = "cpu"
+device = "cuda"
 
 
 def get_gpt2_and_tokenizer(model_path):
     config = GPT2Config.from_pretrained(model_path)
-    gpt2 = GPT2LMHeadModel(config)
+    gpt2 = GPT2LMHeadModel(config).to(device=device)
     tokenizer = GPT2Tokenizer.from_pretrained(model_path)
 
     return gpt2, tokenizer
@@ -68,7 +68,6 @@ def get_gpt2_and_tokenizer(model_path):
 def model_forward(model, batch):
     ids = batch["input_ids"].to(device)
     labels = batch["labels"].to(device)
-    print(ids.shape)
     output = model(input_ids=ids, labels=labels, return_dict=True)
     loss = output.loss
 
@@ -85,9 +84,8 @@ def return_model_eval(eval_dataset):
         eval_start_timestamp = time.time()
         losses = []
         for batch in dl:
-            ids = batch["input_ids"].to(device)
             with torch.no_grad():
-                loss = model_forward(model, ids)
+                loss, _ = model_forward(model, batch)
             losses.append(loss.reshape(1))
         eval_loss = torch.cat(losses).mean()
         model.train()
@@ -95,10 +93,6 @@ def return_model_eval(eval_dataset):
         return {"eval_loss": eval_loss}, time.time() - eval_start_timestamp
 
     return model_eval
-
-
-def save_checkpoint(model, optimizer, lr_scheduler):
-    pass
 
 
 def log(metrics, step=None, commit=True):
@@ -119,31 +113,38 @@ def get_lr_scheduler(optimizer, lr_conf):
     )
 
 
-trainer = Trainer(blueprint_text=blueprint)
-blueprint = trainer.blueprint
+def main():
+    global blueprint, device
+    torch.set_default_device(device)
 
-gpt2, tokenizer = get_gpt2_and_tokenizer(blueprint.model)
-wikitext = load_dataset(blueprint.dataset[0].path, blueprint.dataset[0].name)
-wikitext = prepare_wikitext_dataset(wikitext, tokenizer)
-model_eval_func = return_model_eval(wikitext["validation"])
-optimizer = get_optimizer(gpt2, blueprint.optimizer, blueprint.learning_rate)
-lr_scheduler = get_lr_scheduler(optimizer, blueprint.learning_rate)
-train_dataset = wikitext["train"]
-dataloader_kwargs = dict(
-    generator=torch.Generator(device=device),
-    collate_fn=default_data_collator,
-    num_workers=os.cpu_count(),
-)
+    trainer = Trainer(blueprint_text=blueprint)
+    blueprint = trainer.blueprint
 
-trainer.prepare(
-    model_forward=model_forward,
-    model_eval=model_eval_func,
-    save_checkpoint=save_checkpoint,
-    log=log,
-    optimizer=optimizer,
-    train_dataset=train_dataset,
-    dataloader_kwargs=dataloader_kwargs,
-    lr_scheduler=lr_scheduler,
-)
-trainer.test_blueprint(gpt2)
-trainer.training_from_scratch(gpt2)
+    gpt2, tokenizer = get_gpt2_and_tokenizer(blueprint.model)
+    wikitext = load_dataset(blueprint.dataset[0].path, blueprint.dataset[0].name)
+    wikitext = prepare_wikitext_dataset(wikitext, tokenizer)
+    model_eval_func = return_model_eval(wikitext["validation"])
+    optimizer = get_optimizer(gpt2, blueprint.optimizer, blueprint.learning_rate)
+    lr_scheduler = get_lr_scheduler(optimizer, blueprint.learning_rate)
+    train_dataset = wikitext["validation"]
+    dataloader_kwargs = dict(
+        generator=torch.Generator(device=device),
+        collate_fn=default_data_collator,
+        num_workers=os.cpu_count(),
+    )
+
+    trainer.prepare(
+        model_forward=model_forward,
+        model_eval=model_eval_func,
+        log=log,
+        optimizer=optimizer,
+        train_dataset=train_dataset,
+        dataloader_kwargs=dataloader_kwargs,
+        lr_scheduler=lr_scheduler,
+    )
+    trainer.test_blueprint(gpt2)
+    trainer.training_from_scratch(gpt2)
+
+if __name__ == "__main__":
+    torch.multiprocessing.set_start_method('spawn')
+    main()

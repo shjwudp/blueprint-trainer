@@ -1,3 +1,10 @@
+from blueprint_trainer.utils import (
+    are_the_models_the_same,
+    are_the_optimizers_the_same,
+    are_the_lr_scheduler_the_same,
+)
+import blueprint_trainer.utils as blueprint_utils
+
 from collections import namedtuple
 import time
 import yaml
@@ -32,7 +39,7 @@ BatchSizePlanItem = namedtuple(
 )
 
 CheckpointConfig = namedtuple(
-    "CheckpointConfig", ["interval_by_step", "interval_by_time"]
+    "CheckpointConfig", ["path", "interval_by_step", "interval_by_time"]
 )
 
 EvaluationConfig = namedtuple(
@@ -54,32 +61,33 @@ class Trainer:
         elif blueprint_filepath:
             blueprint_json = yaml.load(open(blueprint_filepath).read(), Loader=yaml.Loader)
 
-        blueprint_json = blueprint_json["blueprint"]
+        j = blueprint_json["blueprint"]
         self.blueprint = Blueprint(
-            model=blueprint_json["model"],
-            optimizer=blueprint_json["optimizer"],
+            model=j["model"],
+            optimizer=j["optimizer"],
             learning_rate=LearningRateConfig(
-                base=float(blueprint_json["learning_rate"]["base"]),
-                scheduler=blueprint_json["learning_rate"]["scheduler"],
-                num_warmup_steps=blueprint_json["learning_rate"]["num_warmup_steps"],
+                base=float(j["learning_rate"]["base"]),
+                scheduler=j["learning_rate"]["scheduler"],
+                num_warmup_steps=j["learning_rate"]["num_warmup_steps"],
             ),
             dataset=[
                 DatasetConfigItem(path=x["path"], name=x["name"])
-                for x in blueprint_json["dataset"]
+                for x in j["dataset"]
             ],
             batch_size_plan=[
                 BatchSizePlanItem(
                     batch_size=x["batch_size"],
                     training_nsteps=x["training_nsteps"]
-                ) for x in blueprint_json["batch_size_plan"]
+                ) for x in j["batch_size_plan"]
             ],
             checkpoint=CheckpointConfig(
-                interval_by_step=blueprint_json["checkpoint"]["interval_by_step"],
-                interval_by_time=blueprint_json["checkpoint"]["interval_by_time"],
+                path=j["checkpoint"]["path"],
+                interval_by_step=j["checkpoint"]["interval_by_step"],
+                interval_by_time=j["checkpoint"]["interval_by_time"],
             ),
             evaluation=EvaluationConfig(
-                interval_by_step=blueprint_json["evaluation"]["interval_by_step"],
-                interval_by_time=blueprint_json["evaluation"]["interval_by_time"],
+                interval_by_step=j["evaluation"]["interval_by_step"],
+                interval_by_time=j["evaluation"]["interval_by_time"],
             )
         )
 
@@ -90,6 +98,8 @@ class Trainer:
         model_forward=None,
         model_eval=None,
         save_checkpoint=None,
+        load_checkpoint=None,
+        delete_checkpoint=None,
         log=None,
         optimizer=None,
         train_dataset=None,
@@ -98,12 +108,11 @@ class Trainer:
     ):
         self.model_forward = model_forward
         self.model_eval = model_eval
-        self.save_checkpoint = save_checkpoint
         self.log = log
         self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
         self.train_dataset = train_dataset
         self.dataloader_kwargs = dataloader_kwargs
-        self.lr_scheduler = lr_scheduler
 
         # data loader initialization
         n_dataloader = []
@@ -121,10 +130,6 @@ class Trainer:
 
             stage_dataset = Subset(train_dataset, range(bs*train_step))
             train_dataset = Subset(train_dataset, range(bs*train_step, len(train_dataset)))
-            # for x in train_dataset:
-            #     assert len(x["input_ids"]) == 512
-            # x = train_dataset[0]
-            # print(x, len(x["input_ids"]), len(x["attention_mask"]), len(x["labels"]))
 
             dataloder = DataLoader(
                 stage_dataset,
@@ -133,6 +138,20 @@ class Trainer:
             )
             n_dataloader.append(dataloder)
         self.n_dataloader = n_dataloader
+
+        # checkpoint functions check and alert
+        if any([save_checkpoint, load_checkpoint, delete_checkpoint]):
+            assert all([save_checkpoint, load_checkpoint, delete_checkpoint]), \
+                f"Please make sure that all checkpoint functions are set, or none of them are set."
+            
+            self.save_checkpoint = save_checkpoint
+            self.load_checkpoint = load_checkpoint
+            self.delete_checkpoint = delete_checkpoint
+        else:
+            # No function passed in, use the preset checkpoint functions
+            self.save_checkpoint = blueprint_utils.save_checkpoint
+            self.load_checkpoint = blueprint_utils.load_checkpoint
+            self.delete_checkpoint = blueprint_utils.delete_checkpoint
 
     def print_blueprint(self):
         # TODO: Many blueprint details need to be improved, 
@@ -144,6 +163,7 @@ class Trainer:
         n_dataloader = self.n_dataloader
         model_forward = self.model_forward
         model_eval = self.model_eval
+        lr_scheduler = self.lr_scheduler
 
         # Memory Stress Test
         completed_steps = 0
@@ -162,10 +182,35 @@ class Trainer:
 
                 optimizer.step()
                 optimizer.zero_grad()
+                lr_scheduler.step()
                 completed_steps += 1
+        print("Memory Stress Test done.")
 
+        # Test Model Evaluation
         model_eval(model)
-        print("test is ok!")
+        print("Model Evaluation Test done.")
+
+        # Test Checkpoint Save & Load
+        if self.save_checkpoint:
+            ckpt_dir = self.blueprint.checkpoint.path
+            self.save_checkpoint(
+                ckpt_dir=ckpt_dir,
+                step=completed_steps,
+                model=model,
+                optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
+            )
+
+            saved_model, saved_optimizer, saved_lr_scheduler = \
+                self.load_checkpoint(ckpt_dir=ckpt_dir, step=completed_steps)
+
+            assert are_the_models_the_same(model, saved_model)
+            assert are_the_optimizers_the_same(optimizer, saved_optimizer)
+            assert are_the_lr_scheduler_the_same(lr_scheduler, saved_lr_scheduler)
+
+            self.delete_checkpoint(ckpt_dir=ckpt_dir, step=completed_steps)
+        print("Checkpoint Save & Load Test done.")
+        print("Congratulations, the blueprint test is complete!")
 
     def training_from_scratch(self, model):
         optimizer = self.optimizer
