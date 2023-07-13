@@ -115,13 +115,14 @@ class Trainer:
         self.lr_scheduler = lr_scheduler
         self.train_dataset = train_dataset
         self.dataloader_kwargs = dataloader_kwargs
+        self.dp_handler = dp_handler
 
         # data loader initialization
         n_dataloader = []
         blueprint = self.blueprint
 
         def get_dataloader(dataset, batch_size):
-            dl_kwargs = copy.deepcopy(dataloader_kwargs)
+            dl_kwargs = self.dataloader_kwargs
             if dp_handler:
                 dp = dp_handler
                 # TODO: Supports data parallelism with uneven batch size 
@@ -209,6 +210,7 @@ class Trainer:
 
         # Test Checkpoint Save & Load
         if self.save_checkpoint:
+            # TODO: Please fix me, need to check checkpoint functionality correctly
             ckpt_dir = self.blueprint.checkpoint.path
             self.save_checkpoint(
                 ckpt_dir=ckpt_dir,
@@ -219,7 +221,13 @@ class Trainer:
             )
 
             saved_model, saved_optimizer, saved_lr_scheduler = \
-                self.load_checkpoint(ckpt_dir=ckpt_dir, step=completed_steps)
+                self.load_checkpoint(
+                    ckpt_dir=ckpt_dir,
+                    step=completed_steps,
+                    model=copy.deepcopy(model),
+                    optimizer=copy.deepcopy(optimizer),
+                    lr_scheduler=copy.deepcopy(lr_scheduler),
+                )
 
             assert are_the_models_the_same(model, saved_model)
             assert are_the_optimizers_the_same(optimizer, saved_optimizer)

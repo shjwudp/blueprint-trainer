@@ -10,7 +10,7 @@ python train_gpt2.py
 torchrun \
     --standalone \
     --nnodes=1 \
-    --nproc-per-node=2 \
+    --nproc-per-node=1 \
         data_parallel_training.py \
         --blueprint_filepath ./blueprints/gpt2_blueprint.yaml
 ```
