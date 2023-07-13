@@ -8,8 +8,9 @@ import blueprint_trainer.utils as blueprint_utils
 from collections import namedtuple
 import time
 import yaml
+import copy
 
-import torch
+from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader, Subset
 
 
@@ -104,6 +105,7 @@ class Trainer:
         optimizer=None,
         train_dataset=None,
         dataloader_kwargs=None,
+        dp_handler=None,
         lr_scheduler=None,
     ):
         self.model_forward = model_forward
@@ -113,30 +115,45 @@ class Trainer:
         self.lr_scheduler = lr_scheduler
         self.train_dataset = train_dataset
         self.dataloader_kwargs = dataloader_kwargs
+        self.dp_handler = dp_handler
 
         # data loader initialization
         n_dataloader = []
         blueprint = self.blueprint
+
+        def get_dataloader(dataset, batch_size):
+            dl_kwargs = self.dataloader_kwargs
+            if dp_handler:
+                dp = dp_handler
+                # TODO: Supports data parallelism with uneven batch size 
+                # distribution, and variable-length data sets have such 
+                # usage scenarios
+                assert batch_size % dp.world_size == 0
+                assert "sampler" not in dataloader_kwargs
+                dl_kwargs["sampler"] = DistributedSampler(
+                    dataset, dp.world_size, dp.rank, shuffle=False
+                )
+                batch_size = batch_size//dp.world_size
+
+            dataloader = DataLoader(
+                dataset, batch_size=batch_size,
+                **dataloader_kwargs,
+            )
+
+            return dataloader
+
         for plan in blueprint.batch_size_plan:
             bs, train_step = plan.batch_size, plan.training_nsteps
             if train_step == -1 or bs*train_step > len(train_dataset):
-                dataloder = DataLoader(
-                    train_dataset,
-                    batch_size=bs,
-                    **dataloader_kwargs,
-                )
-                n_dataloader.append(dataloder)
+                dataloader = get_dataloader(train_dataset, bs)
+                n_dataloader.append(dataloader)
                 break
 
             stage_dataset = Subset(train_dataset, range(bs*train_step))
             train_dataset = Subset(train_dataset, range(bs*train_step, len(train_dataset)))
 
-            dataloder = DataLoader(
-                stage_dataset,
-                batch_size=bs,
-                **dataloader_kwargs,
-            )
-            n_dataloader.append(dataloder)
+            dataloader = get_dataloader(stage_dataset, bs)
+            n_dataloader.append(dataloader)
         self.n_dataloader = n_dataloader
 
         # checkpoint functions check and alert
@@ -164,6 +181,7 @@ class Trainer:
         model_forward = self.model_forward
         model_eval = self.model_eval
         lr_scheduler = self.lr_scheduler
+        dp = self.dp_handler
 
         # Memory Stress Test
         completed_steps = 0
@@ -192,6 +210,7 @@ class Trainer:
 
         # Test Checkpoint Save & Load
         if self.save_checkpoint:
+            # TODO: Please fix me, need to check checkpoint functionality correctly
             ckpt_dir = self.blueprint.checkpoint.path
             self.save_checkpoint(
                 ckpt_dir=ckpt_dir,
@@ -202,7 +221,13 @@ class Trainer:
             )
 
             saved_model, saved_optimizer, saved_lr_scheduler = \
-                self.load_checkpoint(ckpt_dir=ckpt_dir, step=completed_steps)
+                self.load_checkpoint(
+                    ckpt_dir=ckpt_dir,
+                    step=completed_steps,
+                    model=copy.deepcopy(model),
+                    optimizer=copy.deepcopy(optimizer),
+                    lr_scheduler=copy.deepcopy(lr_scheduler),
+                )
 
             assert are_the_models_the_same(model, saved_model)
             assert are_the_optimizers_the_same(optimizer, saved_optimizer)
@@ -241,11 +266,11 @@ class Trainer:
                 spend_time = time.time() - time_stone
                 time_stone = time.time()
                 metrics.update({"loss": loss, "spend_time": spend_time})
-                log(metrics, step=completed_steps)
+                log(metrics=metrics, step=completed_steps)
 
                 if completed_steps % eval_interval == 0:
                     eval_metrics, spend_time = model_eval(model)
-                    log(eval_metrics, commit=False)
+                    log(metrics=eval_metrics, commit=False)
 
                 if completed_steps % checkpoint_interval == 0:
                     save_checkpoint(model, optimizer, lr_scheduler)
