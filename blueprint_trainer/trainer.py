@@ -230,7 +230,13 @@ class Trainer:
             )
 
             saved_model, saved_optimizer, saved_lr_scheduler = \
-                self.load_checkpoint(ckpt_dir=ckpt_dir, step=completed_steps)
+                self.load_checkpoint(
+                    ckpt_dir=ckpt_dir,
+                    step=completed_steps,
+                    model=copy.deepcopy(model),
+                    optimizer=copy.deepcopy(optimizer),
+                    lr_scheduler=copy.deepcopy(lr_scheduler),
+                )
 
             assert are_the_models_the_same(model, saved_model)
             assert are_the_optimizers_the_same(optimizer, saved_optimizer)
