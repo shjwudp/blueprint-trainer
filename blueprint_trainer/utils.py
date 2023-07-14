@@ -35,3 +35,40 @@ def load_checkpoint(ckpt_dir, step, model, optimizer, lr_scheduler):
 def delete_checkpoint(ckpt_dir, step):
     save_path = get_save_path(ckpt_dir, step)
     os.remove(save_path)
+
+def seconds_to_human_friendly_time_str(secs):
+    time = secs
+
+    # convert seconds to day, hour, minutes and seconds
+    day = time // (24 * 3600)
+    time = time % (24 * 3600)
+    hour = time // 3600
+    time %= 3600
+    minutes = time // 60
+    time %= 60
+    seconds = time
+
+    if day:
+        time_str = f"{day} day{'s' if day > 1 else ''}"
+        if hour:
+            time_str += f" and {hour} hour{'s' if hour > 1 else ''}"
+
+        return time_str
+    
+    if hour:
+        time_str = f"{hour} hour{'s' if hour > 1 else ''}"
+        if minutes:
+            time_str += f" and {minutes} minute{'s' if minutes > 1 else ''}"
+
+        return time_str
+    
+    if minutes:
+        time_str = f"{minutes} minute{'s' if minutes > 1 else ''}"
+        if minutes:
+            time_str += f" and {seconds} second{'s' if seconds > 1 else ''}"
+
+        return time_str
+    
+    time_str = f"{seconds} second{'s' if seconds > 1 else ''}"
+
+    return time_str

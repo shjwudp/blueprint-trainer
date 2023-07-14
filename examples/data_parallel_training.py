@@ -1,15 +1,13 @@
 from dataset_utils import prepare_wikitext_dataset
+from example_utils import optimizer_constructor, lr_scheduler_constructor
 
 import argparse
-from itertools import chain
 import time
 import os
 from contextlib import contextmanager
-import contextlib
 import functools
 
 import torch
-import transformers
 from datasets import load_dataset
 from transformers import (
     GPT2Tokenizer,
@@ -19,7 +17,6 @@ from transformers import (
 )
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data.distributed import DistributedSampler
 
 from blueprint_trainer import Trainer
 
@@ -111,19 +108,6 @@ def my_logging_function(metrics, step=None, commit=True):
         print_rank0(f"step-{step}, " + ", ".join([f"{key}: {value}" for key, value in metrics.items()]))
 
 
-def get_optimizer_and_lr_scheduler(model, optim_opt, lr_conf):
-    if optim_opt == "AdamW":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr_conf.base)
-
-    lr_scheduler = transformers.get_scheduler(
-        lr_conf.scheduler,
-        optimizer,
-        num_warmup_steps=lr_conf.num_warmup_steps,
-    )
-
-    return optimizer, lr_scheduler
-
-
 def main():
     args = get_args()
 
@@ -152,18 +136,19 @@ def main():
             eval_func(model)
         dp.barrier()
 
-    optimizer, lr_scheduler = get_optimizer_and_lr_scheduler(
-        model,
-        blueprint.optimizer,
-        blueprint.learning_rate,
-    )
-
     trainer.prepare(
         model_forward=functools.partial(model_forward, device=dp.device),
         model_eval=moel_eval_func,
         log=my_logging_function,
-        optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
+        optimizer_constructor=functools.partial(
+            optimizer_constructor,
+            optim_opt=blueprint.optimizer,
+            lr_conf=blueprint.learning_rate,
+        ),
+        lr_scheduler_constructor=functools.partial(
+            lr_scheduler_constructor,
+            lr_conf=blueprint.learning_rate,
+        ),
         train_dataset=wikitext["train"],
         dataloader_kwargs=dict(
             collate_fn=default_data_collator,

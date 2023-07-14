@@ -2,6 +2,7 @@ from blueprint_trainer.utils import (
     are_the_models_the_same,
     are_the_optimizers_the_same,
     are_the_lr_scheduler_the_same,
+    seconds_to_human_friendly_time_str,
 )
 import blueprint_trainer.utils as blueprint_utils
 
@@ -92,7 +93,7 @@ class Trainer:
             )
         )
 
-        self.ready_to_train = False
+        self.blueprint_completed_testing = False
 
     def prepare(
         self,
@@ -102,17 +103,17 @@ class Trainer:
         load_checkpoint=None,
         delete_checkpoint=None,
         log=None,
-        optimizer=None,
+        optimizer_constructor=None,
+        lr_scheduler_constructor=None,
         train_dataset=None,
         dataloader_kwargs=None,
         dp_handler=None,
-        lr_scheduler=None,
     ):
         self.model_forward = model_forward
         self.model_eval = model_eval
         self.log = log
-        self.optimizer = optimizer
-        self.lr_scheduler = lr_scheduler
+        self.optimizer_constructor = optimizer_constructor
+        self.lr_scheduler_constructor = lr_scheduler_constructor
         self.train_dataset = train_dataset
         self.dataloader_kwargs = dataloader_kwargs
         self.dp_handler = dp_handler
@@ -175,13 +176,12 @@ class Trainer:
         # including time estimation, data consumption-time curve
         pass
 
-    def test_blueprint(self, model):
-        optimizer = self.optimizer
+    def memory_stress_test(self, model):
+        print("Start Memory Stress Test..")
+        optimizer = self.optimizer_constructor(model)
         n_dataloader = self.n_dataloader
         model_forward = self.model_forward
-        model_eval = self.model_eval
-        lr_scheduler = self.lr_scheduler
-        dp = self.dp_handler
+        lr_scheduler = self.lr_scheduler_constructor(optimizer)
 
         # Memory Stress Test
         completed_steps = 0
@@ -204,13 +204,22 @@ class Trainer:
                 completed_steps += 1
         print("Memory Stress Test done.")
 
+    def test_model_evaluation(self, model):
+        print("Start Model Evaluation Test..")
+        model_eval = self.model_eval
+
         # Test Model Evaluation
         model_eval(model)
         print("Model Evaluation Test done.")
 
+    def test_checkpoint_save_and_load(self, model):
+        print("Start Checkpoint Save & Load Test..")
+        completed_steps = 0
+        optimizer = self.optimizer_constructor(model)
+        lr_scheduler = self.lr_scheduler_constructor(optimizer)
+
         # Test Checkpoint Save & Load
         if self.save_checkpoint:
-            # TODO: Please fix me, need to check checkpoint functionality correctly
             ckpt_dir = self.blueprint.checkpoint.path
             self.save_checkpoint(
                 ckpt_dir=ckpt_dir,
@@ -235,19 +244,69 @@ class Trainer:
 
             self.delete_checkpoint(ckpt_dir=ckpt_dir, step=completed_steps)
         print("Checkpoint Save & Load Test done.")
+
+    def estimate_training_time(self, model):
+        print("Start Estimate Training Time..")
+        estimated_training_time = 0
+        optimizer = self.optimizer_constructor(model)
+        n_dataloader = self.n_dataloader
+        model_forward = self.model_forward
+        lr_scheduler = self.lr_scheduler_constructor(optimizer)
+
+        # Estimate Training Time
+        optimizer.zero_grad()
+        for dl in n_dataloader:
+            batch_count = 0
+            sample_count = 0
+            sample_time = 0
+            for batch in dl:
+                batch_count += 1
+
+                if sample_count > 10:
+                    continue
+
+                start_timestamp = time.time()
+                loss, _ = model_forward(model, batch)
+                loss.backward()
+
+                optimizer.step()
+                optimizer.zero_grad()
+                lr_scheduler.step()
+
+                sample_time += time.time() - start_timestamp
+                sample_count += 1
+
+            if sample_count:
+                estimated_training_time += batch_count * (sample_time / sample_count)
+
+        print(f"Estimate Training Time Done. The training is expected to take {seconds_to_human_friendly_time_str(estimated_training_time)}.")
+
+    def test_blueprint(self, model):
+        model_copy = copy.deepcopy(model)
+
+        self.memory_stress_test(model_copy)
+        self.test_model_evaluation(model_copy)
+        self.test_checkpoint_save_and_load(model_copy)
+        self.estimate_training_time(model_copy)
+
+        self.blueprint_completed_testing = True
         print("Congratulations, the blueprint test is complete!")
 
     def training_from_scratch(self, model):
-        optimizer = self.optimizer
+        if not self.blueprint_completed_testing:
+            print("The blueprint is not tested, of course you can train directly, but without testing why you design the blueprint..")
+
         n_dataloader = self.n_dataloader
         model_forward = self.model_forward
         log = self.log
         blueprint = self.blueprint
         model_eval = self.model_eval
         save_checkpoint = self.save_checkpoint
-        lr_scheduler = self.lr_scheduler
         eval_interval = blueprint.evaluation.interval_by_step
         checkpoint_interval = blueprint.checkpoint.interval_by_step
+
+        optimizer = self.optimizer_constructor(model)
+        lr_scheduler = self.lr_scheduler_constructor(optimizer)
 
         # model training
         completed_steps = 0

@@ -1,10 +1,11 @@
 from dataset_utils import prepare_wikitext_dataset
+from example_utils import optimizer_constructor, lr_scheduler_constructor
 
 import time
 import os
+import functools
 
 import torch
-import transformers
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, default_data_collator
 from datasets import load_dataset
 
@@ -95,22 +96,8 @@ def return_model_eval(eval_dataset):
     return model_eval
 
 
-def log(metrics, step=None, commit=True):
-    pass
-
-
-def get_optimizer(model, optim_opt, lr_conf):
-    if optim_opt == "AdamW":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr_conf.base)
-        return optimizer
-    
-
-def get_lr_scheduler(optimizer, lr_conf):
-    return transformers.get_scheduler(
-        lr_conf.scheduler,
-        optimizer,
-        num_warmup_steps=lr_conf.num_warmup_steps,
-    )
+def my_logging_function(metrics, step=None, commit=True):
+    print(f"step-{step}, " + ", ".join([f"{key}: {value}" for key, value in metrics.items()]))
 
 
 def main():
@@ -124,9 +111,7 @@ def main():
     wikitext = load_dataset(blueprint.dataset[0].path, blueprint.dataset[0].name)
     wikitext = prepare_wikitext_dataset(wikitext, tokenizer)
     model_eval_func = return_model_eval(wikitext["validation"])
-    optimizer = get_optimizer(gpt2, blueprint.optimizer, blueprint.learning_rate)
-    lr_scheduler = get_lr_scheduler(optimizer, blueprint.learning_rate)
-    train_dataset = wikitext["validation"]
+    train_dataset = wikitext["train"]
     dataloader_kwargs = dict(
         generator=torch.Generator(device=device),
         collate_fn=default_data_collator,
@@ -136,11 +121,18 @@ def main():
     trainer.prepare(
         model_forward=model_forward,
         model_eval=model_eval_func,
-        log=log,
-        optimizer=optimizer,
+        log=my_logging_function,
+        optimizer_constructor=functools.partial(
+            optimizer_constructor,
+            optim_opt=blueprint.optimizer,
+            lr_conf=blueprint.learning_rate,
+        ),
+        lr_scheduler_constructor=functools.partial(
+            lr_scheduler_constructor,
+            lr_conf=blueprint.learning_rate,
+        ),
         train_dataset=train_dataset,
         dataloader_kwargs=dataloader_kwargs,
-        lr_scheduler=lr_scheduler,
     )
     trainer.test_blueprint(gpt2)
     trainer.training_from_scratch(gpt2)
