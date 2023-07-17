@@ -15,6 +15,7 @@ import copy
 import torch
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader, Subset
+import tabulate
 
 
 Blueprint = namedtuple(
@@ -137,7 +138,7 @@ class Trainer:
             dataloader = self._get_dataloader(stage_dataset, bs)
             n_dataloader.append(dataloader)
         self.n_dataloader = n_dataloader
-        self.gradient_accumulation_steps = [1]*len(self.n_dataloader)
+        self.n_step_of_gradient_accumulation = [1]*len(self.n_dataloader)
 
         # checkpoint functions check and alert
         if any([save_checkpoint, load_checkpoint, delete_checkpoint]):
@@ -179,7 +180,7 @@ class Trainer:
 
         return dataloader
 
-    def _tuning_gradient_accumulation_steps(self, model, dataloader):
+    def _tuning_step_of_gradient_accumulation(self, model, dataloader):
         batch_size = dataloader.batch_size
         micro_batches = list(filter(lambda x: batch_size % x == 0, range(1, batch_size + 1)))
 
@@ -236,13 +237,22 @@ class Trainer:
 
         # Memory Stress Test
         for i, dl in enumerate(n_dataloader):
-            n_gradient_accumulation_step = self._tuning_gradient_accumulation_steps(model, dl)
-            self.gradient_accumulation_steps[i] = n_gradient_accumulation_step
+            n_gradient_accumulation_step = self._tuning_step_of_gradient_accumulation(model, dl)
+            self.n_step_of_gradient_accumulation[i] = n_gradient_accumulation_step
             self.n_dataloader[i] = self._get_dataloader(
                 dl.dataset,
                 dl.batch_size//n_gradient_accumulation_step,
             )
         print(f"Memory Stress Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
+        table_str = tabulate.tabulate(
+            data=zip(
+                range(1, len(n_dataloader)+1),
+                [dl.batch_size for dl in n_dataloader],
+                self.n_step_of_gradient_accumulation,
+            ),
+            headers=["#", "Batch Size", "Step of Gradient Accumulation"],
+        )
+        print(table_str)
 
     def test_model_evaluation(self, model):
         print("Start Model Evaluation Test..")
@@ -298,7 +308,7 @@ class Trainer:
 
         # Estimate Training Time
         optimizer.zero_grad()
-        for dl, n_gas in zip(n_dataloader, self.gradient_accumulation_steps):
+        for dl, n_gas in zip(n_dataloader, self.n_step_of_gradient_accumulation):
             accumulator = blueprint_utils.GradientAccumulator(n_gas)
             batch_count = 0
             sample_count = 0
@@ -359,7 +369,7 @@ class Trainer:
         completed_steps = 0
         optimizer.zero_grad()
         time_stone = time.time()
-        for dl, n_gas in zip(n_dataloader, self.gradient_accumulation_steps):
+        for dl, n_gas in zip(n_dataloader, self.n_step_of_gradient_accumulation):
             accumulator = blueprint_utils.GradientAccumulator(n_gas)
             for batch in dl:
                 with accumulator.accumulate(model.no_sync):
