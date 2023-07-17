@@ -20,5 +20,6 @@ setup(
         "torch",
         "PyYAML",
         "mpld3",
+        "tabulate",
     ],
 )
