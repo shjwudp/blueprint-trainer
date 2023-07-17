@@ -237,7 +237,7 @@ class Trainer:
 
         # Memory Stress Test
         for i, dl in enumerate(n_dataloader):
-            print(f"Test #{i} of {len(n_dataloader)} Dataloader..")
+            print(f"Test #{i+1} of {len(n_dataloader)} Dataloader..")
             n_gradient_accumulation_step = self._tuning_step_of_gradient_accumulation(model, dl)
             self.n_step_of_gradient_accumulation[i] = n_gradient_accumulation_step
             self.n_dataloader[i] = self._get_dataloader(
