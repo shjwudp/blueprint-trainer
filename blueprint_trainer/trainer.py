@@ -5,12 +5,14 @@ from blueprint_trainer.utils import (
     seconds_to_human_friendly_time_str,
 )
 import blueprint_trainer.utils as blueprint_utils
+from blueprint_trainer.algorithm import lambda_is_ok_upper_bound_int
 
 from collections import namedtuple
 import time
 import yaml
 import copy
 
+import torch
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader, Subset
 
@@ -122,40 +124,20 @@ class Trainer:
         n_dataloader = []
         blueprint = self.blueprint
 
-        def get_dataloader(dataset, batch_size):
-            dl_kwargs = self.dataloader_kwargs
-            if dp_handler:
-                dp = dp_handler
-                # TODO: Supports data parallelism with uneven batch size 
-                # distribution, and variable-length data sets have such 
-                # usage scenarios
-                assert batch_size % dp.world_size == 0
-                assert "sampler" not in dataloader_kwargs
-                dl_kwargs["sampler"] = DistributedSampler(
-                    dataset, dp.world_size, dp.rank, shuffle=False
-                )
-                batch_size = batch_size//dp.world_size
-
-            dataloader = DataLoader(
-                dataset, batch_size=batch_size,
-                **dataloader_kwargs,
-            )
-
-            return dataloader
-
         for plan in blueprint.batch_size_plan:
             bs, train_step = plan.batch_size, plan.training_nsteps
             if train_step == -1 or bs*train_step > len(train_dataset):
-                dataloader = get_dataloader(train_dataset, bs)
+                dataloader = self._get_dataloader(train_dataset, bs)
                 n_dataloader.append(dataloader)
                 break
 
             stage_dataset = Subset(train_dataset, range(bs*train_step))
             train_dataset = Subset(train_dataset, range(bs*train_step, len(train_dataset)))
 
-            dataloader = get_dataloader(stage_dataset, bs)
+            dataloader = self._get_dataloader(stage_dataset, bs)
             n_dataloader.append(dataloader)
         self.n_dataloader = n_dataloader
+        self.gradient_accumulation_steps = [1]*len(self.n_dataloader)
 
         # checkpoint functions check and alert
         if any([save_checkpoint, load_checkpoint, delete_checkpoint]):
@@ -176,18 +158,42 @@ class Trainer:
         # including time estimation, data consumption-time curve
         pass
 
-    def memory_stress_test(self, model):
-        print("Start Memory Stress Test..")
-        optimizer = self.optimizer_constructor(model)
-        n_dataloader = self.n_dataloader
-        model_forward = self.model_forward
-        lr_scheduler = self.lr_scheduler_constructor(optimizer)
+    def _get_dataloader(self, dataset, batch_size):
+        dl_kwargs = self.dataloader_kwargs
+        dp = self.dp_handler
+        if dp:
+            # TODO: Supports data parallelism with uneven batch size 
+            # distribution, and variable-length data sets have such 
+            # usage scenarios
+            assert batch_size % dp.world_size == 0
+            assert "sampler" not in dl_kwargs
+            dl_kwargs["sampler"] = DistributedSampler(
+                dataset, dp.world_size, dp.rank, shuffle=False
+            )
+            batch_size = batch_size//dp.world_size
 
-        # Memory Stress Test
-        completed_steps = 0
-        optimizer.zero_grad()
-        next_threshold_of_data_amount = 0
-        for dl in n_dataloader:
+        dataloader = DataLoader(
+            dataset, batch_size=batch_size,
+            **dl_kwargs,
+        )
+
+        return dataloader
+
+    def _tuning_gradient_accumulation_steps(self, model, dataloader):
+        batch_size = dataloader.batch_size
+        micro_batches = list(filter(lambda x: batch_size % x == 0, range(1, batch_size + 1)))
+
+        def is_gradient_accumulation_step_ok(index):
+            micro_batch = micro_batches[index]
+            n_graidient_accumulation_step = batch_size//micro_batch
+            accumulator = blueprint_utils.GradientAccumulator(n_graidient_accumulation_step)
+
+            dl = self._get_dataloader(dataloader.datasets, micro_batch)
+            optimizer = self.optimizer_constructor(model)
+            model_forward = self.model_forward
+            lr_scheduler = self.lr_scheduler_constructor(optimizer)
+
+            next_threshold_of_data_amount = 0
             for batch in dl:
                 the_amount_of_data = sum(x.numel() for x in batch.values())
 
@@ -195,25 +201,61 @@ class Trainer:
                     continue
                 next_threshold_of_data_amount = the_amount_of_data
 
-                loss, _ = model_forward(model, batch)
-                loss.backward()
+                try:
+                    with accumulator.accumulate(model.no_sync):
+                        loss, _ = model_forward(model, batch)
+                        loss.backward()
 
-                optimizer.step()
-                optimizer.zero_grad()
-                lr_scheduler.step()
-                completed_steps += 1
-        print("Memory Stress Test done.")
+                    if accumulator.sync_gradients:
+                        optimizer.step()
+                        optimizer.zero_grad()
+                        lr_scheduler.step()
+                except torch.cuda.OutOfMemoryError:
+                    return False
+                except:
+                    raise
+
+            return True
+
+        index = lambda_is_ok_upper_bound_int(
+            is_gradient_accumulation_step_ok,
+            0, len(micro_batches)-1,
+        ) - 1
+
+        if index < 0:
+            raise torch.cuda.OutOfMemoryError("batch_size = 1 memory limit exceeded!!")
+
+        n_gradient_accumulation_step = batch_size//micro_batches[index]
+
+        return n_gradient_accumulation_step
+
+    def memory_stress_test(self, model):
+        print("Start Memory Stress Test..")
+        function_start_time = time.time()
+        n_dataloader = self.n_dataloader
+
+        # Memory Stress Test
+        for i, dl in enumerate(n_dataloader):
+            n_gradient_accumulation_step = self._tuning_gradient_accumulation_steps(model, dl)
+            self.gradient_accumulation_steps[i] = n_gradient_accumulation_step
+            self.n_dataloader[i] = self._get_dataloader(
+                dl.dataset,
+                dl.batch_size//n_gradient_accumulation_step,
+            )
+        print(f"Memory Stress Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
 
     def test_model_evaluation(self, model):
         print("Start Model Evaluation Test..")
+        function_start_time = time.time()
         model_eval = self.model_eval
 
         # Test Model Evaluation
         model_eval(model)
-        print("Model Evaluation Test done.")
+        print(f"Model Evaluation Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
 
     def test_checkpoint_save_and_load(self, model):
         print("Start Checkpoint Save & Load Test..")
+        function_start_time = time.time()
         completed_steps = 0
         optimizer = self.optimizer_constructor(model)
         lr_scheduler = self.lr_scheduler_constructor(optimizer)
@@ -243,10 +285,11 @@ class Trainer:
             assert are_the_lr_scheduler_the_same(lr_scheduler, saved_lr_scheduler)
 
             self.delete_checkpoint(ckpt_dir=ckpt_dir, step=completed_steps)
-        print("Checkpoint Save & Load Test done.")
+        print(f"Checkpoint Save & Load Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
 
     def estimate_training_time(self, model):
         print("Start Estimate Training Time..")
+        function_start_time = time.time()
         estimated_training_time = 0
         optimizer = self.optimizer_constructor(model)
         n_dataloader = self.n_dataloader
@@ -255,7 +298,8 @@ class Trainer:
 
         # Estimate Training Time
         optimizer.zero_grad()
-        for dl in n_dataloader:
+        for dl, n_gas in zip(n_dataloader, self.gradient_accumulation_steps):
+            accumulator = blueprint_utils.GradientAccumulator(n_gas)
             batch_count = 0
             sample_count = 0
             sample_time = 0
@@ -266,12 +310,14 @@ class Trainer:
                     continue
 
                 start_timestamp = time.time()
-                loss, _ = model_forward(model, batch)
-                loss.backward()
+                with accumulator.accumulate(model.no_sync):
+                    loss, _ = model_forward(model, batch)
+                    loss.backward()
 
-                optimizer.step()
-                optimizer.zero_grad()
-                lr_scheduler.step()
+                if self.sync_gradients:
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    lr_scheduler.step()
 
                 sample_time += time.time() - start_timestamp
                 sample_count += 1
@@ -279,7 +325,7 @@ class Trainer:
             if sample_count:
                 estimated_training_time += batch_count * (sample_time / sample_count)
 
-        print(f"Estimate Training Time Done. The training is expected to take {seconds_to_human_friendly_time_str(estimated_training_time)}.")
+        print(f"Estimate Training Time Done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}. The training is expected to take {seconds_to_human_friendly_time_str(estimated_training_time)}.")
 
     def test_blueprint(self, model):
         start_timestamp = time.time()
@@ -313,24 +359,27 @@ class Trainer:
         completed_steps = 0
         optimizer.zero_grad()
         time_stone = time.time()
-        for dl in n_dataloader:
+        for dl, n_gas in zip(n_dataloader, self.gradient_accumulation_steps):
+            accumulator = blueprint_utils.GradientAccumulator(n_gas)
             for batch in dl:
-                loss, metrics = model_forward(model, batch)
-                loss.backward()
+                with accumulator.accumulate(model.no_sync):
+                    loss, metrics = model_forward(model, batch)
+                    loss.backward()
 
-                optimizer.step()
-                optimizer.zero_grad()
-                completed_steps += 1
+                if accumulator.sync_gradients:
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    completed_steps += 1
 
-                # logging
-                spend_time = time.time() - time_stone
-                time_stone = time.time()
-                metrics.update({"loss": loss, "spend_time": spend_time})
-                log(metrics=metrics, step=completed_steps)
+                    # logging
+                    spend_time = time.time() - time_stone
+                    time_stone = time.time()
+                    metrics.update({"loss": loss, "spend_time": spend_time})
+                    log(metrics=metrics, step=completed_steps)
 
-                if completed_steps % eval_interval == 0:
-                    eval_metrics, spend_time = model_eval(model)
-                    log(metrics=eval_metrics, commit=False)
+                    if completed_steps % eval_interval == 0:
+                        eval_metrics, spend_time = model_eval(model)
+                        log(metrics=eval_metrics, commit=False)
 
-                if completed_steps % checkpoint_interval == 0:
-                    save_checkpoint(model, optimizer, lr_scheduler)
+                    if completed_steps % checkpoint_interval == 0:
+                        save_checkpoint(model, optimizer, lr_scheduler)

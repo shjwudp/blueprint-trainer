@@ -1,4 +1,5 @@
 import os
+import contextlib
 
 import torch
 
@@ -72,3 +73,22 @@ def seconds_to_human_friendly_time_str(secs):
     time_str = f"{seconds} second{'s' if seconds > 1 else ''}"
 
     return time_str
+
+class GradientAccumulator:
+
+    def __init__(self, n_gradient_accumulation_step) -> None:
+        self.num_forward = 0
+        self.sync_gradients = False
+        self.n_gradient_accumulation_step = n_gradient_accumulation_step
+
+    @contextlib.contextmanager
+    def accumulate(self, model_no_sync):
+        self.num_forward += 1
+        self.sync_gradients = self.num_forward % self.n_gradient_accumulation_step == 0
+        if self.sync_gradients:
+            context = contextlib.nullcontext
+        else:
+            context = model_no_sync
+
+        with context():
+            yield
