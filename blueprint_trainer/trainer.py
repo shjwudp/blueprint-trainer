@@ -246,11 +246,11 @@ class Trainer:
             )
         print(f"Memory Stress Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
         table_str = tabulate.tabulate(
-            data=zip(
-                range(1, len(n_dataloader)+1),
+            list(zip(
+                list(range(1, len(n_dataloader)+1)),
                 [dl.batch_size for dl in n_dataloader],
                 self.n_step_of_gradient_accumulation,
-            ),
+            )),
             headers=["#", "Batch Size", "Step of Gradient Accumulation"],
         )
         print(table_str)
