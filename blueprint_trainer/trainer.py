@@ -282,6 +282,7 @@ class Trainer:
         print(f"Estimate Training Time Done. The training is expected to take {seconds_to_human_friendly_time_str(estimated_training_time)}.")
 
     def test_blueprint(self, model):
+        start_timestamp = time.time()
         model_copy = copy.deepcopy(model)
 
         self.memory_stress_test(model_copy)
@@ -290,7 +291,7 @@ class Trainer:
         self.estimate_training_time(model_copy)
 
         self.blueprint_completed_testing = True
-        print("Congratulations, the blueprint test is complete!")
+        print(f"Congratulations, the blueprint test is complete! It takes {seconds_to_human_friendly_time_str(time.time()-start_timestamp)}.")
 
     def training_from_scratch(self, model):
         if not self.blueprint_completed_testing:
