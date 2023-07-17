@@ -160,7 +160,7 @@ class Trainer:
         pass
 
     def _get_dataloader(self, dataset, batch_size):
-        dl_kwargs = self.dataloader_kwargs
+        dl_kwargs = copy.copy(self.dataloader_kwargs)
         dp = self.dp_handler
         if dp:
             # TODO: Supports data parallelism with uneven batch size 
@@ -189,7 +189,7 @@ class Trainer:
             n_graidient_accumulation_step = batch_size//micro_batch
             accumulator = blueprint_utils.GradientAccumulator(n_graidient_accumulation_step)
 
-            dl = self._get_dataloader(dataloader.datasets, micro_batch)
+            dl = self._get_dataloader(dataloader.dataset, micro_batch)
             optimizer = self.optimizer_constructor(model)
             model_forward = self.model_forward
             lr_scheduler = self.lr_scheduler_constructor(optimizer)
@@ -237,6 +237,7 @@ class Trainer:
 
         # Memory Stress Test
         for i, dl in enumerate(n_dataloader):
+            print(f"Test #{i} of {len(n_dataloader)} Dataloader..")
             n_gradient_accumulation_step = self._tuning_step_of_gradient_accumulation(model, dl)
             self.n_step_of_gradient_accumulation[i] = n_gradient_accumulation_step
             self.n_dataloader[i] = self._get_dataloader(
