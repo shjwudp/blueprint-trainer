@@ -268,7 +268,7 @@ class Trainer:
 
         return step_of_gradient_accumulation
 
-    def memory_stress_test(self, model, mode):
+    def memory_stress_test(self, model):
         print("Start Memory Stress Test..")
         function_start_time = time.time()
         n_dataloader = self.n_dataloader
@@ -282,12 +282,12 @@ class Trainer:
             if dl.batch_size % suggest_micro_batch == 0:
                 step_of_gradient_accumulation = dl.batch_size//suggest_micro_batch
                 test_dl = self._get_dataloader(dl.dataset, suggest_micro_batch)
-                if not self._test_step_of_gradient_accumulation(model, test_dl, step_of_gradient_accumulation, mode):
+                if not self._test_step_of_gradient_accumulation(model, test_dl, step_of_gradient_accumulation):
                     step_of_gradient_accumulation = 0
 
             if not step_of_gradient_accumulation:
                 step_of_gradient_accumulation = self.\
-                    _tuning_step_of_gradient_accumulation(model, dl, mode)
+                    _tuning_step_of_gradient_accumulation(model, dl)
 
             self.n_step_of_gradient_accumulation[i] = step_of_gradient_accumulation
             micro_batch = dl.batch_size//step_of_gradient_accumulation
