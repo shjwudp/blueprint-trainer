@@ -6,11 +6,16 @@ from blueprint_trainer.utils import (
 )
 import blueprint_trainer.utils as blueprint_utils
 from blueprint_trainer.algorithm import lambda_is_ok_upper_bound_int
+from blueprint_trainer.system import (
+    pynvml,
+    GPUUtilization,
+)
 
 from collections import namedtuple
 import time
 import yaml
 import copy
+import os
 
 import torch
 from torch.utils.data.distributed import DistributedSampler
@@ -180,29 +185,41 @@ class Trainer:
 
         return dataloader
     
+    def _get_large_nbatch_from_dataloader(
+        self,
+        dataloader,
+        step_of_gradient_accumulation,
+    ):
+        large_nbatch_quantity = 0
+        large_nbatch = []
+        nbatch = []
+        for batch in dataloader:
+            nbatch.append(batch)
+            if len(nbatch) == step_of_gradient_accumulation:
+                q = [sum(x.numel() for x in batch.values()) for batch in nbatch]
+                if q > large_nbatch_quantity:
+                    large_nbatch = nbatch
+                nbatch = []
+
+        return large_nbatch
+    
     def _test_step_of_gradient_accumulation(
         self,
         model,
         dataloader,
-        step_of_graidient_accumulation,
-        mode,
+        step_of_gradient_accumulation,
     ):
         optimizer = self.optimizer_constructor(model)
         model_forward = self.model_forward
         lr_scheduler = self.lr_scheduler_constructor(optimizer)
-        accumulator = blueprint_utils.GradientAccumulator(step_of_graidient_accumulation)
+        accumulator = blueprint_utils.GradientAccumulator(step_of_gradient_accumulation)
 
-        next_threshold_of_data_amount = 0
-        for i, batch in enumerate(dataloader):
-            if mode == "easy" and i > 10:
-                break
+        large_nbatch = self._get_large_nbatch_from_dataloader(
+            dataloader,
+            step_of_gradient_accumulation,
+        )
 
-            the_amount_of_data = sum(x.numel() for x in batch.values())
-
-            if the_amount_of_data <= next_threshold_of_data_amount:
-                continue
-            next_threshold_of_data_amount = the_amount_of_data
-
+        for batch in large_nbatch:
             try:
                 with accumulator.accumulate(model.no_sync):
                     loss, _ = model_forward(model, batch)
@@ -217,28 +234,26 @@ class Trainer:
             except:
                 raise
 
-            return True
+        return True
 
     def _tuning_step_of_gradient_accumulation(
         self,
         model,
         dataloader,
-        mode,
     ):
         batch_size = dataloader.batch_size
         micro_batches = list(filter(lambda x: batch_size % x == 0, range(1, batch_size + 1)))
 
         def is_gradient_accumulation_step_ok(index):
             micro_batch = micro_batches[index]
-            step_of_graidient_accumulation = batch_size//micro_batch
+            step_of_gradient_accumulation = batch_size//micro_batch
 
             dl = self._get_dataloader(dataloader.dataset, micro_batch)
 
             return self._test_step_of_gradient_accumulation(
                 model,
                 dl,
-                step_of_graidient_accumulation,
-                mode,
+                step_of_gradient_accumulation,
             )
 
         index = lambda_is_ok_upper_bound_int(
@@ -249,9 +264,9 @@ class Trainer:
         if index < 0:
             raise torch.cuda.OutOfMemoryError("batch_size = 1 memory limit exceeded!!")
 
-        step_of_graidient_accumulation = batch_size//micro_batches[index]
+        step_of_gradient_accumulation = batch_size//micro_batches[index]
 
-        return step_of_graidient_accumulation
+        return step_of_gradient_accumulation
 
     def memory_stress_test(self, model, mode):
         print("Start Memory Stress Test..")
@@ -263,19 +278,19 @@ class Trainer:
         for i, dl in enumerate(n_dataloader):
             print(f"Test #{i+1} of {len(n_dataloader)} Dataloader..")
 
-            step_of_graidient_accumulation = 0
+            step_of_gradient_accumulation = 0
             if dl.batch_size % suggest_micro_batch == 0:
-                step_of_graidient_accumulation = dl.batch_size//suggest_micro_batch
+                step_of_gradient_accumulation = dl.batch_size//suggest_micro_batch
                 test_dl = self._get_dataloader(dl.dataset, suggest_micro_batch)
-                if not self._test_step_of_gradient_accumulation(model, test_dl, step_of_graidient_accumulation, mode):
-                    step_of_graidient_accumulation = 0
+                if not self._test_step_of_gradient_accumulation(model, test_dl, step_of_gradient_accumulation, mode):
+                    step_of_gradient_accumulation = 0
 
-            if not step_of_graidient_accumulation:
-                step_of_graidient_accumulation = self.\
+            if not step_of_gradient_accumulation:
+                step_of_gradient_accumulation = self.\
                     _tuning_step_of_gradient_accumulation(model, dl, mode)
 
-            self.n_step_of_gradient_accumulation[i] = step_of_graidient_accumulation
-            micro_batch = dl.batch_size//step_of_graidient_accumulation
+            self.n_step_of_gradient_accumulation[i] = step_of_gradient_accumulation
+            micro_batch = dl.batch_size//step_of_gradient_accumulation
             self.n_dataloader[i] = self._get_dataloader(
                 dl.dataset,
                 micro_batch,
@@ -344,36 +359,44 @@ class Trainer:
         model_forward = self.model_forward
         lr_scheduler = self.lr_scheduler_constructor(optimizer)
 
+        # Init gpu monitor
+        pynvml.nvmlInit()
+        gpu_util = GPUUtilization(os.getpid())
+
         # Estimate Training Time
         optimizer.zero_grad()
-        for dl, n_gas in zip(n_dataloader, self.n_step_of_gradient_accumulation):
-            accumulator = blueprint_utils.GradientAccumulator(n_gas)
+        N_SAMPLES = 3
+        for dl, n_sga in zip(n_dataloader, self.n_step_of_gradient_accumulation):
+            accumulator = blueprint_utils.GradientAccumulator(n_sga)
             batch_count = 0
             sample_count = 0
             sample_time = 0
+            time_mark = time.time()
             for batch in dl:
                 batch_count += 1
 
-                if sample_count > 10:
+                if sample_count > N_SAMPLES:
                     continue
 
-                start_timestamp = time.time()
                 with accumulator.accumulate(model.no_sync):
                     loss, _ = model_forward(model, batch)
                     loss.backward()
+                    gpu_util.sample()
 
-                if self.sync_gradients:
+                if accumulator.sync_gradients:
                     optimizer.step()
                     optimizer.zero_grad()
                     lr_scheduler.step()
 
-                sample_time += time.time() - start_timestamp
-                sample_count += 1
+                    sample_time += time.time() - time_mark
+                    time_mark = time.time()
+                    sample_count += 1
 
             if sample_count:
-                estimated_training_time += batch_count * (sample_time / sample_count)
+                estimated_training_time += batch_count * (sample_time / (sample_count*self.n_step_of_gradient_accumulation))
 
         print(f"Estimate Training Time Done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}. The training is expected to take {seconds_to_human_friendly_time_str(estimated_training_time)}.")
+        print(f"When estimating the training time, the GPU util was sampled by the way, and the sampling result is: {gpu_util.aggregate()}")
 
     def test_blueprint(self, model, mode="easy"):
         start_timestamp = time.time()
