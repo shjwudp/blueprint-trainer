@@ -398,13 +398,13 @@ class Trainer:
         print(f"Estimate Training Time Done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}. The training is expected to take {seconds_to_human_friendly_time_str(estimated_training_time)}.")
         print(f"When estimating the training time, the GPU util was sampled by the way, and the sampling result is: {gpu_util.aggregate()}")
 
-    def test_blueprint(self, model, mode="easy"):
+    def test_blueprint(self, model):
         start_timestamp = time.time()
         model_copy = copy.deepcopy(model)
 
         self.test_checkpoint_save_and_load(model_copy)
         self.test_model_evaluation(model_copy)
-        self.memory_stress_test(model_copy, mode)
+        self.memory_stress_test(model_copy)
         self.estimate_training_time(model_copy)
 
         self.blueprint_completed_testing = True
