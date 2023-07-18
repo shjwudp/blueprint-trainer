@@ -179,44 +179,67 @@ class Trainer:
         )
 
         return dataloader
+    
+    def _test_step_of_gradient_accumulation(
+        self,
+        model,
+        dataloader,
+        step_of_graidient_accumulation,
+        mode,
+    ):
+        optimizer = self.optimizer_constructor(model)
+        model_forward = self.model_forward
+        lr_scheduler = self.lr_scheduler_constructor(optimizer)
+        accumulator = blueprint_utils.GradientAccumulator(step_of_graidient_accumulation)
 
-    def _tuning_step_of_gradient_accumulation(self, model, dataloader):
+        next_threshold_of_data_amount = 0
+        for i, batch in enumerate(dataloader):
+            if mode == "easy" and i > 10:
+                break
+
+            the_amount_of_data = sum(x.numel() for x in batch.values())
+
+            if the_amount_of_data <= next_threshold_of_data_amount:
+                continue
+            next_threshold_of_data_amount = the_amount_of_data
+
+            try:
+                with accumulator.accumulate(model.no_sync):
+                    loss, _ = model_forward(model, batch)
+                    loss.backward()
+
+                if accumulator.sync_gradients:
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    lr_scheduler.step()
+            except torch.cuda.OutOfMemoryError:
+                return False
+            except:
+                raise
+
+            return True
+
+    def _tuning_step_of_gradient_accumulation(
+        self,
+        model,
+        dataloader,
+        mode,
+    ):
         batch_size = dataloader.batch_size
         micro_batches = list(filter(lambda x: batch_size % x == 0, range(1, batch_size + 1)))
 
         def is_gradient_accumulation_step_ok(index):
             micro_batch = micro_batches[index]
-            n_graidient_accumulation_step = batch_size//micro_batch
-            accumulator = blueprint_utils.GradientAccumulator(n_graidient_accumulation_step)
+            step_of_graidient_accumulation = batch_size//micro_batch
 
             dl = self._get_dataloader(dataloader.dataset, micro_batch)
-            optimizer = self.optimizer_constructor(model)
-            model_forward = self.model_forward
-            lr_scheduler = self.lr_scheduler_constructor(optimizer)
 
-            next_threshold_of_data_amount = 0
-            for batch in dl:
-                the_amount_of_data = sum(x.numel() for x in batch.values())
-
-                if the_amount_of_data <= next_threshold_of_data_amount:
-                    continue
-                next_threshold_of_data_amount = the_amount_of_data
-
-                try:
-                    with accumulator.accumulate(model.no_sync):
-                        loss, _ = model_forward(model, batch)
-                        loss.backward()
-
-                    if accumulator.sync_gradients:
-                        optimizer.step()
-                        optimizer.zero_grad()
-                        lr_scheduler.step()
-                except torch.cuda.OutOfMemoryError:
-                    return False
-                except:
-                    raise
-
-            return True
+            return self._test_step_of_gradient_accumulation(
+                model,
+                dl,
+                step_of_graidient_accumulation,
+                mode,
+            )
 
         index = lambda_is_ok_upper_bound_int(
             is_gradient_accumulation_step_ok,
@@ -226,24 +249,38 @@ class Trainer:
         if index < 0:
             raise torch.cuda.OutOfMemoryError("batch_size = 1 memory limit exceeded!!")
 
-        n_gradient_accumulation_step = batch_size//micro_batches[index]
+        step_of_graidient_accumulation = batch_size//micro_batches[index]
 
-        return n_gradient_accumulation_step
+        return step_of_graidient_accumulation
 
-    def memory_stress_test(self, model):
+    def memory_stress_test(self, model, mode):
         print("Start Memory Stress Test..")
         function_start_time = time.time()
         n_dataloader = self.n_dataloader
 
         # Memory Stress Test
+        suggest_micro_batch = n_dataloader[0].batch_size
         for i, dl in enumerate(n_dataloader):
             print(f"Test #{i+1} of {len(n_dataloader)} Dataloader..")
-            n_gradient_accumulation_step = self._tuning_step_of_gradient_accumulation(model, dl)
-            self.n_step_of_gradient_accumulation[i] = n_gradient_accumulation_step
+
+            step_of_graidient_accumulation = 0
+            if dl.batch_size % suggest_micro_batch == 0:
+                step_of_graidient_accumulation = dl.batch_size//suggest_micro_batch
+                test_dl = self._get_dataloader(dl.dataset, suggest_micro_batch)
+                if not self._test_step_of_gradient_accumulation(model, test_dl, step_of_graidient_accumulation, mode):
+                    step_of_graidient_accumulation = 0
+
+            if not step_of_graidient_accumulation:
+                step_of_graidient_accumulation = self.\
+                    _tuning_step_of_gradient_accumulation(model, dl, mode)
+
+            self.n_step_of_gradient_accumulation[i] = step_of_graidient_accumulation
+            micro_batch = dl.batch_size//step_of_graidient_accumulation
             self.n_dataloader[i] = self._get_dataloader(
                 dl.dataset,
-                dl.batch_size//n_gradient_accumulation_step,
+                micro_batch,
             )
+            suggest_micro_batch = micro_batch
         print(f"Memory Stress Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
         table_str = tabulate.tabulate(
             list(zip(
@@ -338,13 +375,13 @@ class Trainer:
 
         print(f"Estimate Training Time Done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}. The training is expected to take {seconds_to_human_friendly_time_str(estimated_training_time)}.")
 
-    def test_blueprint(self, model):
+    def test_blueprint(self, model, mode="easy"):
         start_timestamp = time.time()
         model_copy = copy.deepcopy(model)
 
-        self.memory_stress_test(model_copy)
-        self.test_model_evaluation(model_copy)
         self.test_checkpoint_save_and_load(model_copy)
+        self.test_model_evaluation(model_copy)
+        self.memory_stress_test(model_copy, mode)
         self.estimate_training_time(model_copy)
 
         self.blueprint_completed_testing = True
