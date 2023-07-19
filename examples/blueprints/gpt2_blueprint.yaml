@@ -15,13 +15,13 @@ blueprint:
 
   batch_size_plan:
   - batch_size: 32
-    training_nsteps: 10000
+    training_nsteps: 100
   - batch_size: 64
-    training_nsteps: 10000
+    training_nsteps: 100
   - batch_size: 128
-    training_nsteps: 20000
+    training_nsteps: 200
   - batch_size: 256
-    training_nsteps: 20000
+    training_nsteps: 200
   - batch_size: 512
     training_nsteps: -1
 
@@ -32,9 +32,9 @@ blueprint:
 
   checkpoint:
     path: "./gpt2_checkpoints"
-    interval_by_step: 1000
+    interval_by_step: 100
     interval_by_time: "1h"
 
   evaluation:
-    interval_by_step: 1000
+    interval_by_step: 100
     interval_by_time: "1h"
