@@ -115,7 +115,7 @@ def main():
     dataloader_kwargs = dict(
         generator=torch.Generator(device=device),
         collate_fn=default_data_collator,
-        num_workers=os.cpu_count(),
+        num_workers=1,
     )
 
     trainer.prepare(

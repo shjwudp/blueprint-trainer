@@ -16,6 +16,7 @@ import time
 import yaml
 import copy
 import os
+import random
 
 import torch
 from torch.utils.data.distributed import DistributedSampler
@@ -190,15 +191,17 @@ class Trainer:
         dataloader,
         step_of_gradient_accumulation,
     ):
+        time_mark = time.time()
         large_nbatch_quantity = 0
         large_nbatch = []
         nbatch = []
         for batch in dataloader:
             nbatch.append(batch)
             if len(nbatch) == step_of_gradient_accumulation:
-                q = [sum(x.numel() for x in batch.values()) for batch in nbatch]
+                q = sum([sum(x.numel() for x in batch.values()) for batch in nbatch])
                 if q > large_nbatch_quantity:
                     large_nbatch = nbatch
+                    large_nbatch_quantity = q
                 nbatch = []
 
         return large_nbatch
@@ -268,39 +271,44 @@ class Trainer:
 
         return step_of_gradient_accumulation
 
-    def memory_stress_test(self, model):
+    def memory_stress_test(self, model, dataset):
         print("Start Memory Stress Test..")
         function_start_time = time.time()
         n_dataloader = self.n_dataloader
 
         # Memory Stress Test
-        suggest_micro_batch = n_dataloader[0].batch_size
-        for i, dl in enumerate(n_dataloader):
-            print(f"Test #{i+1} of {len(n_dataloader)} Dataloader..")
+        micro_batch_solutions = []
+        for i, plan in enumerate(self.blueprint.batch_size_plan):
+            batch_size = plan.batch_size
 
+            # Find out among existing solutions
             step_of_gradient_accumulation = 0
-            if dl.batch_size % suggest_micro_batch == 0:
-                step_of_gradient_accumulation = dl.batch_size//suggest_micro_batch
-                test_dl = self._get_dataloader(dl.dataset, suggest_micro_batch)
-                if not self._test_step_of_gradient_accumulation(model, test_dl, step_of_gradient_accumulation):
-                    step_of_gradient_accumulation = 0
+            for mb in micro_batch_solutions:
+                if batch_size % mb == 0:
+                    step_of_gradient_accumulation = batch_size//mb
 
-            if not step_of_gradient_accumulation:
+            # Find out in experiments
+            if step_of_gradient_accumulation == 0:
+                dl = self._get_dataloader(dataset, batch_size)
                 step_of_gradient_accumulation = self.\
                     _tuning_step_of_gradient_accumulation(model, dl)
-
+                
+            if i >= len(self.n_step_of_gradient_accumulation):
+                break
+                
             self.n_step_of_gradient_accumulation[i] = step_of_gradient_accumulation
-            micro_batch = dl.batch_size//step_of_gradient_accumulation
+            micro_batch = batch_size//step_of_gradient_accumulation
             self.n_dataloader[i] = self._get_dataloader(
-                dl.dataset,
+                self.n_dataloader[i].dataset,
                 micro_batch,
             )
-            suggest_micro_batch = micro_batch
+            micro_batch_solutions.append(micro_batch)
+
         print(f"Memory Stress Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
         table_str = tabulate.tabulate(
             list(zip(
                 list(range(1, len(n_dataloader)+1)),
-                [dl.batch_size for dl in n_dataloader],
+                [plan.batch_size for plan in self.blueprint.batch_size_plan][:len(n_dataloader)],
                 self.n_step_of_gradient_accumulation,
             )),
             headers=["#", "Batch Size", "Step of Gradient Accumulation"],
@@ -350,7 +358,7 @@ class Trainer:
             self.delete_checkpoint(ckpt_dir=ckpt_dir, step=completed_steps)
         print(f"Checkpoint Save & Load Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
 
-    def estimate_training_time(self, model):
+    def estimate_training_time(self, model, dataset):
         print("Start Estimate Training Time..")
         function_start_time = time.time()
         estimated_training_time = 0
@@ -365,19 +373,20 @@ class Trainer:
 
         # Estimate Training Time
         optimizer.zero_grad()
-        N_SAMPLES = 3
-        for dl, n_sga in zip(n_dataloader, self.n_step_of_gradient_accumulation):
-            accumulator = blueprint_utils.GradientAccumulator(n_sga)
-            batch_count = 0
+        N_SAMPLES = 1
+        time_cost_of_each_stage = []
+        gpu_util_at_each_stage = []
+        for i, step in enumerate(self.n_step_of_gradient_accumulation):
+            print(f"Test #{i+1} of {len(n_dataloader)} Dataloader..")
+            batch_size = self.blueprint.batch_size_plan[i].batch_size
+            micro_batch = batch_size//step
+            dl = self._get_dataloader(dataset, micro_batch)
+
+            accumulator = blueprint_utils.GradientAccumulator(step)
             sample_count = 0
             sample_time = 0
             time_mark = time.time()
             for batch in dl:
-                batch_count += 1
-
-                if sample_count > N_SAMPLES:
-                    continue
-
                 with accumulator.accumulate(model.no_sync):
                     loss, _ = model_forward(model, batch)
                     loss.backward()
@@ -391,12 +400,38 @@ class Trainer:
                     sample_time += time.time() - time_mark
                     time_mark = time.time()
                     sample_count += 1
+                    if sample_count > N_SAMPLES:
+                        break
 
-            if sample_count:
-                estimated_training_time += batch_count * (sample_time / (sample_count*self.n_step_of_gradient_accumulation))
+            batch_count = len(self.n_dataloader[i])
+            estimated_training_time = batch_count * (sample_time / (sample_count*step))
+            time_cost_of_each_stage.append(estimated_training_time)
 
-        print(f"Estimate Training Time Done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}. The training is expected to take {seconds_to_human_friendly_time_str(estimated_training_time)}.")
-        print(f"When estimating the training time, the GPU util was sampled by the way, and the sampling result is: {gpu_util.aggregate()}")
+            gpu_util_at_each_stage.append(gpu_util.aggregate())
+            gpu_util.clear()
+
+        print(f"Estimate Training Time Done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}. The training is expected to take {seconds_to_human_friendly_time_str(sum(time_cost_of_each_stage))}.")
+        table_str = tabulate.tabulate(
+            list(zip(
+                list(range(1, len(n_dataloader)+1)),
+                [plan.batch_size for plan in self.blueprint.batch_size_plan][:len(n_dataloader)],
+                time_cost_of_each_stage,
+                gpu_util_at_each_stage,
+            )),
+            headers=["#", "Batch Size", "Estimate Training Time", "GPU Util"],
+        )
+        print(table_str)
+
+    def _sample_dataset_for_testing(self):
+        max_batch_size = 0
+        for plan in self.blueprint.batch_size_plan:
+            max_batch_size = max(max_batch_size, plan.batch_size)
+            
+        num_samples = max_batch_size * 5
+        samples_index = random.sample(list(range(len(self.train_dataset))), num_samples)
+        sampled_dataset = Subset(self.train_dataset, samples_index)
+        
+        return sampled_dataset
 
     def test_blueprint(self, model):
         start_timestamp = time.time()
@@ -404,8 +439,10 @@ class Trainer:
 
         self.test_checkpoint_save_and_load(model_copy)
         self.test_model_evaluation(model_copy)
-        self.memory_stress_test(model_copy)
-        self.estimate_training_time(model_copy)
+        
+        sampled_dataset = self._sample_dataset_for_testing()
+        self.memory_stress_test(model_copy, sampled_dataset)
+        self.estimate_training_time(model_copy, sampled_dataset)
 
         self.blueprint_completed_testing = True
         print(f"Congratulations, the blueprint test is complete! It takes {seconds_to_human_friendly_time_str(time.time()-start_timestamp)}.")

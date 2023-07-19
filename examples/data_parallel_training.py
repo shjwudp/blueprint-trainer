@@ -153,7 +153,7 @@ def main():
         dataloader_kwargs=dict(
             collate_fn=default_data_collator,
             generator=torch.Generator(device=dp.device),
-            num_workers=os.cpu_count(),
+            num_workers=1,
         ),
         dp_handler=dp,
     )
