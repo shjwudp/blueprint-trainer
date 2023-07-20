@@ -321,7 +321,7 @@ class Trainer:
         model_eval = self.model_eval
 
         # Test Model Evaluation
-        model_eval(model)
+        metrics, spend_time = model_eval(model)
         print(f"Model Evaluation Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
 
     def test_checkpoint_save_and_load(self, model):
@@ -459,6 +459,7 @@ class Trainer:
         save_checkpoint = self.save_checkpoint
         eval_interval = blueprint.evaluation.interval_by_step
         checkpoint_interval = blueprint.checkpoint.interval_by_step
+        ckpt_dir = self.blueprint.checkpoint.path
 
         optimizer = self.optimizer_constructor(model)
         lr_scheduler = self.lr_scheduler_constructor(optimizer)
@@ -477,12 +478,13 @@ class Trainer:
                 if accumulator.sync_gradients:
                     optimizer.step()
                     optimizer.zero_grad()
+                    lr_scheduler.step()
                     completed_steps += 1
 
                     # logging
                     spend_time = time.time() - time_stone
                     time_stone = time.time()
-                    metrics.update({"loss": loss, "spend_time": spend_time})
+                    metrics.update({"loss": loss, "spend_time": spend_time, "lr": lr_scheduler.get_lr()})
                     log(metrics=metrics, step=completed_steps)
 
                     if completed_steps % eval_interval == 0:
@@ -490,4 +492,10 @@ class Trainer:
                         log(metrics=eval_metrics, commit=False)
 
                     if completed_steps % checkpoint_interval == 0:
-                        save_checkpoint(model, optimizer, lr_scheduler)
+                        save_checkpoint(
+                            ckpt_dir=ckpt_dir,
+                            step=completed_steps,
+                            model=model,
+                            optimizer=optimizer,
+                            lr_scheduler=lr_scheduler,
+                        )

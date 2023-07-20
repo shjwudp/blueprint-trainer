@@ -4,6 +4,7 @@ from example_utils import optimizer_constructor, lr_scheduler_constructor
 import time
 import os
 import functools
+import argparse
 
 import torch
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, default_data_collator
@@ -11,49 +12,6 @@ from datasets import load_dataset
 
 from blueprint_trainer import Trainer
 
-
-blueprint = """
-What It Is:
-  GPT2 training blueprint
-
-blueprint:
-  model: "gpt2"
-  optimizer: "AdamW"
-  learning_rate:
-    base: 1e-4
-    scheduler: "inverse_sqrt"
-    num_warmup_steps: 1000
-
-  dataset:
-  - path: "wikitext"
-    name: "wikitext-103-v1"
-
-  batch_size_plan:
-  - batch_size: 2
-    training_nsteps: 100
-  - batch_size: 4
-    training_nsteps: 100
-  - batch_size: 8
-    training_nsteps: 200
-  - batch_size: 16
-    training_nsteps: 200
-  - batch_size: 32
-    training_nsteps: -1
-
-  logging:
-    path: "./gpt2_training_log"
-    interval_by_step: 1
-    interval_by_time: "1h"
-
-  checkpoint:
-    path: "./gpt2_checkpoints"
-    interval_by_step: 1000
-    interval_by_time: "1h"
-
-  evaluation:
-    interval_by_step: 1000
-    interval_by_time: "1h"
-"""
 
 device = "cuda"
 
@@ -100,11 +58,21 @@ def my_logging_function(metrics, step=None, commit=True):
     print(f"step-{step}, " + ", ".join([f"{key}: {value}" for key, value in metrics.items()]))
 
 
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--blueprint_filepath", required=True)
+    args = parser.parse_args()
+    
+    return args
+
+
 def main():
+    args = get_args()
+    
     global blueprint, device
     torch.set_default_device(device)
 
-    trainer = Trainer(blueprint_text=blueprint)
+    trainer = Trainer(blueprint_filepath=blueprint.blueprint_filepath)
     blueprint = trainer.blueprint
 
     gpt2, tokenizer = get_gpt2_and_tokenizer(blueprint.model)

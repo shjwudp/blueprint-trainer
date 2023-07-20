@@ -12,7 +12,6 @@ def fixed_seq_length_of_datasets(
 
     # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
     def group_texts(examples):
-        del examples["attention_mask"]
         pad_id = tokenizer.pad_id if hasattr(tokenizer, "pad_id") else tokenizer.eos_token_id
 
         # Concatenate all texts.
@@ -22,7 +21,8 @@ def fixed_seq_length_of_datasets(
         # Padding in front of tokens to align it with the group size.
         if total_length % block_size != 0:
             count_pad_ids = block_size - (total_length % block_size)
-            concatenated_examples[list(examples.keys())[0]] = count_pad_ids*[pad_id] + concatenated_examples[list(examples.keys())[0]]
+            concatenated_examples["input_ids"] = count_pad_ids*[pad_id] + concatenated_examples["input_ids"]
+            concatenated_examples["attention_mask"] = count_pad_ids*[0] + concatenated_examples["attention_mask"]
 
         # Split by chunks of max_len.
         result = {
