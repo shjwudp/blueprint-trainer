@@ -72,7 +72,7 @@ def main():
     global blueprint, device
     torch.set_default_device(device)
 
-    trainer = Trainer(blueprint_filepath=blueprint.blueprint_filepath)
+    trainer = Trainer(blueprint_filepath=args.blueprint_filepath)
     blueprint = trainer.blueprint
 
     gpt2, tokenizer = get_gpt2_and_tokenizer(blueprint.model)
@@ -103,6 +103,7 @@ def main():
         dataloader_kwargs=dataloader_kwargs,
     )
     trainer.test_blueprint(gpt2)
+    trainer.print_blueprint(gpt2)
     trainer.training_from_scratch(gpt2)
 
 if __name__ == "__main__":

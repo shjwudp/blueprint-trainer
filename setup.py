@@ -6,7 +6,7 @@ setup(
     packages=find_packages(exclude=[]),
     version="0.0.1",
     license="MIT",
-    description="Pytorch trainer with blueprint",
+    description="Pytorch Trainer with Blueprint",
     author="Jianbin Chang",
     author_email="shjwudp@gmail.com",
     long_description_content_type = 'text/markdown',
@@ -19,7 +19,7 @@ setup(
     install_requires=[
         "torch",
         "PyYAML",
-        "mpld3",
         "tabulate",
+        "plotext",
     ],
 )
