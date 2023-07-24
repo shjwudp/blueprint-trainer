@@ -42,10 +42,6 @@ LearningRateConfig = namedtuple(
     "LearningRateConfig", ["base", "scheduler", "num_warmup_steps"]
 )
 
-DatasetConfigItem = namedtuple(
-    "DatasetConfigItem", ["path", "name"]
-)
-
 BatchSizePlanItem = namedtuple(
     "BatchSizePlanItem", ["batch_size", "training_nsteps"]
 )
@@ -86,10 +82,7 @@ class Trainer:
                 scheduler=j["learning_rate"]["scheduler"],
                 num_warmup_steps=j["learning_rate"]["num_warmup_steps"],
             ),
-            dataset=[
-                DatasetConfigItem(path=x["path"], name=x["name"])
-                for x in j["dataset"]
-            ],
+            dataset=[dataset_config for dataset_config in j["dataset"]],
             batch_size_plan=[
                 BatchSizePlanItem(
                     batch_size=x["batch_size"],

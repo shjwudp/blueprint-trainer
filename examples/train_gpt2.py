@@ -1,4 +1,4 @@
-from dataset_utils import prepare_wikitext_dataset
+from dataset_utils import prepare_wikitext_dataset, load_dataset
 from example_utils import optimizer_constructor, lr_scheduler_constructor
 
 import time
@@ -8,7 +8,6 @@ import argparse
 
 import torch
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, default_data_collator
-from datasets import load_dataset
 
 from blueprint_trainer import Trainer
 
@@ -76,7 +75,7 @@ def main():
     blueprint = trainer.blueprint
 
     gpt2, tokenizer = get_gpt2_and_tokenizer(blueprint.model)
-    wikitext = load_dataset(blueprint.dataset[0].path, blueprint.dataset[0].name)
+    wikitext = load_dataset(blueprint.dataset[0])
     wikitext = prepare_wikitext_dataset(wikitext, tokenizer)
     model_eval_func = return_model_eval(wikitext["validation"])
     train_dataset = wikitext["train"]
@@ -105,6 +104,7 @@ def main():
     trainer.test_blueprint(gpt2)
     trainer.print_blueprint(gpt2)
     trainer.training_from_scratch(gpt2)
+
 
 if __name__ == "__main__":
     torch.multiprocessing.set_start_method('spawn')

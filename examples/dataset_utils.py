@@ -1,6 +1,8 @@
 import os
 from itertools import chain
 
+import datasets
+
 
 def fixed_seq_length_of_datasets(
     datasets,
@@ -55,6 +57,7 @@ def prepare_wikitext_dataset(
     tokenized_datasets = raw_datasets.map(
         lambda examples: tokenizer(examples[text_column_name]),
         batched=True,
+        num_proc=os.cpu_count(),
         remove_columns=column_names,
         load_from_cache_file=not overwrite_cache,
         desc="Running tokenizer on dataset",
@@ -68,3 +71,14 @@ def prepare_wikitext_dataset(
     )
 
     return lm_datasets
+
+
+def load_dataset(config):
+    if "load_dataset" in config:
+        dataset = datasets.load_dataset(config["path"], config["name"])
+    elif "load_from_disk" in config:
+        dataset = datasets.load_from_disk(config["dataset_path"])
+    else:
+        raise Exception("The configuration is invalid and the dataset cannot be loaded.")
+        
+    return dataset
