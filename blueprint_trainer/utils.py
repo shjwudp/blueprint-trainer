@@ -52,25 +52,25 @@ def seconds_to_human_friendly_time_str(secs):
     if day:
         time_str = f"{day} day{'s' if day > 1 else ''}"
         if hour:
-            time_str += f" and {hour} hour{'s' if hour > 1 else ''}"
+            time_str += f" and {hour:.2f} hour{'s' if hour > 1 else ''}"
 
         return time_str
     
     if hour:
         time_str = f"{hour} hour{'s' if hour > 1 else ''}"
         if minutes:
-            time_str += f" and {minutes} minute{'s' if minutes > 1 else ''}"
+            time_str += f" and {minutes:.2f} minute{'s' if minutes > 1 else ''}"
 
         return time_str
     
     if minutes:
         time_str = f"{minutes} minute{'s' if minutes > 1 else ''}"
         if minutes:
-            time_str += f" and {seconds} second{'s' if seconds > 1 else ''}"
+            time_str += f" and {seconds:.2f} second{'s' if seconds > 1 else ''}"
 
         return time_str
     
-    time_str = f"{seconds} second{'s' if seconds > 1 else ''}"
+    time_str = f"{seconds:.2f} second{'s' if seconds > 1 else ''}"
 
     return time_str
 
@@ -82,13 +82,13 @@ class GradientAccumulator:
         self.n_gradient_accumulation_step = n_gradient_accumulation_step
 
     @contextlib.contextmanager
-    def accumulate(self, model_no_sync):
+    def accumulate(self, dp_no_sync=contextlib.nullcontext):
         self.num_forward += 1
         self.sync_gradients = self.num_forward % self.n_gradient_accumulation_step == 0
         if self.sync_gradients:
             context = contextlib.nullcontext
         else:
-            context = model_no_sync
+            context = dp_no_sync
 
         with context():
             yield

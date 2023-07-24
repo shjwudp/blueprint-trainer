@@ -30,9 +30,9 @@ def get_gpt2_and_tokenizer(model_path, device="cpu"):
 
 
 def model_forward(model, batch, device):
-    ids = batch["input_ids"].to(device)
-    labels = batch["labels"].to(device)
-    output = model(input_ids=ids, labels=labels, return_dict=True)
+    ids = batch["input_ids"][:, :-1].to(device)
+    labels = batch["input_ids"][:, 1:].to(device)
+    output = model(input_ids=ids, labels=labels)
     loss = output.loss
 
     return loss, {}
@@ -133,8 +133,12 @@ def main():
         )
 
         if dp.is_main_process:
-            eval_func(model)
+            metrics, spend_time = eval_func(model)
+        else:
+            metrics, spend_time = {}, 0.
         dp.barrier()
+        
+        return metrics, spend_time
 
     trainer.prepare(
         model_forward=functools.partial(model_forward, device=dp.device),

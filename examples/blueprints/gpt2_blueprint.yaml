@@ -7,7 +7,7 @@ blueprint:
   learning_rate:
     base: 1e-4
     scheduler: "inverse_sqrt"
-    num_warmup_steps: 1000
+    num_warmup_steps: 100
 
   dataset:
   - path: "wikitext"

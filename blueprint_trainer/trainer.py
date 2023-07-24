@@ -17,6 +17,7 @@ import yaml
 import copy
 import os
 import random
+import contextlib
 
 import torch
 from torch.utils.data.distributed import DistributedSampler
@@ -41,10 +42,6 @@ LearningRateConfig = namedtuple(
     "LearningRateConfig", ["base", "scheduler", "num_warmup_steps"]
 )
 
-DatasetConfigItem = namedtuple(
-    "DatasetConfigItem", ["path", "name"]
-)
-
 BatchSizePlanItem = namedtuple(
     "BatchSizePlanItem", ["batch_size", "training_nsteps"]
 )
@@ -56,6 +53,10 @@ CheckpointConfig = namedtuple(
 EvaluationConfig = namedtuple(
     "EvaluationConfig", ["interval_by_step", "interval_by_time"]
 )
+
+
+class BlueprintDetail:
+    pass
 
 
 class Trainer:
@@ -81,10 +82,7 @@ class Trainer:
                 scheduler=j["learning_rate"]["scheduler"],
                 num_warmup_steps=j["learning_rate"]["num_warmup_steps"],
             ),
-            dataset=[
-                DatasetConfigItem(path=x["path"], name=x["name"])
-                for x in j["dataset"]
-            ],
+            dataset=[dataset_config for dataset_config in j["dataset"]],
             batch_size_plan=[
                 BatchSizePlanItem(
                     batch_size=x["batch_size"],
@@ -101,6 +99,7 @@ class Trainer:
                 interval_by_time=j["evaluation"]["interval_by_time"],
             )
         )
+        self.blueprint_detail = BlueprintDetail()
 
         self.blueprint_completed_testing = False
 
@@ -145,6 +144,7 @@ class Trainer:
             n_dataloader.append(dataloader)
         self.n_dataloader = n_dataloader
         self.n_step_of_gradient_accumulation = [1]*len(self.n_dataloader)
+        self.blueprint_detail.total_training_steps = sum(len(dl)//step for dl, step in zip(self.n_dataloader, self.n_step_of_gradient_accumulation))
 
         # checkpoint functions check and alert
         if any([save_checkpoint, load_checkpoint, delete_checkpoint]):
@@ -160,10 +160,26 @@ class Trainer:
             self.load_checkpoint = blueprint_utils.load_checkpoint
             self.delete_checkpoint = blueprint_utils.delete_checkpoint
 
-    def print_blueprint(self):
-        # TODO: Many blueprint details need to be improved, 
-        # including time estimation, data consumption-time curve
-        pass
+    def print_blueprint(self, model):
+        import plotext as plt
+        
+        total_training_steps = self.blueprint_detail.total_training_steps
+
+        optimizer = self.optimizer_constructor(model)
+        lr_scheduler = self.lr_scheduler_constructor(optimizer)
+        learning_rates = []
+        for i in range(total_training_steps):
+            lr = lr_scheduler.get_lr()
+            assert len(lr) == 1, "Currently only lr scheduler with a length of 1 is supported, if this is not your usage scenario, please report bugs at https://github.com/shjwudp/blueprint-trainer/issues"
+            learning_rates.append(lr[0])
+
+            lr_scheduler.step()
+            
+        plt.scatter(learning_rates)
+        plt.title("learning rate")
+        plt.show()
+        print(self.blueprint._asdict())
+        print(vars(self.blueprint_detail))
 
     def _get_dataloader(self, dataset, batch_size):
         dl_kwargs = copy.copy(self.dataloader_kwargs)
@@ -206,6 +222,11 @@ class Trainer:
 
         return large_nbatch
     
+    def _dp_no_sync(self, model):
+        if self.dp_handler:
+            return model.no_sync
+        return contextlib.nullcontext
+    
     def _test_step_of_gradient_accumulation(
         self,
         model,
@@ -224,7 +245,7 @@ class Trainer:
 
         for batch in large_nbatch:
             try:
-                with accumulator.accumulate(model.no_sync):
+                with accumulator.accumulate(self._dp_no_sync(model)):
                     loss, _ = model_forward(model, batch)
                     loss.backward()
 
@@ -303,11 +324,11 @@ class Trainer:
                 micro_batch,
             )
             micro_batch_solutions.append(micro_batch)
-
+            
         print(f"Memory Stress Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
         table_str = tabulate.tabulate(
             list(zip(
-                list(range(1, len(n_dataloader)+1)),
+                list(range(1, len(self.n_dataloader)+1)),
                 [plan.batch_size for plan in self.blueprint.batch_size_plan][:len(n_dataloader)],
                 self.n_step_of_gradient_accumulation,
             )),
@@ -321,7 +342,7 @@ class Trainer:
         model_eval = self.model_eval
 
         # Test Model Evaluation
-        model_eval(model)
+        metrics, spend_time = model_eval(model)
         print(f"Model Evaluation Test done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}.")
 
     def test_checkpoint_save_and_load(self, model):
@@ -387,7 +408,7 @@ class Trainer:
             sample_time = 0
             time_mark = time.time()
             for batch in dl:
-                with accumulator.accumulate(model.no_sync):
+                with accumulator.accumulate(self._dp_no_sync(model)):
                     loss, _ = model_forward(model, batch)
                     loss.backward()
                     gpu_util.sample()
@@ -410,15 +431,18 @@ class Trainer:
             gpu_util_at_each_stage.append(gpu_util.aggregate())
             gpu_util.clear()
 
+        self.blueprint_detail.time_cost_of_each_stage = time_cost_of_each_stage
+        self.blueprint_detail.gpu_util_at_each_stage = gpu_util_at_each_stage
+
         print(f"Estimate Training Time Done. It takes {seconds_to_human_friendly_time_str(time.time()-function_start_time)}. The training is expected to take {seconds_to_human_friendly_time_str(sum(time_cost_of_each_stage))}.")
         table_str = tabulate.tabulate(
             list(zip(
                 list(range(1, len(n_dataloader)+1)),
                 [plan.batch_size for plan in self.blueprint.batch_size_plan][:len(n_dataloader)],
-                time_cost_of_each_stage,
+                [seconds_to_human_friendly_time_str(secs) for secs in time_cost_of_each_stage],
                 gpu_util_at_each_stage,
             )),
-            headers=["#", "Batch Size", "Estimate Training Time", "GPU Util"],
+            headers=["#", "Batch Size", "Estimated Training Time", "GPU Util"],
         )
         print(table_str)
 
@@ -459,6 +483,7 @@ class Trainer:
         save_checkpoint = self.save_checkpoint
         eval_interval = blueprint.evaluation.interval_by_step
         checkpoint_interval = blueprint.checkpoint.interval_by_step
+        ckpt_dir = self.blueprint.checkpoint.path
 
         optimizer = self.optimizer_constructor(model)
         lr_scheduler = self.lr_scheduler_constructor(optimizer)
@@ -470,19 +495,20 @@ class Trainer:
         for dl, n_gas in zip(n_dataloader, self.n_step_of_gradient_accumulation):
             accumulator = blueprint_utils.GradientAccumulator(n_gas)
             for batch in dl:
-                with accumulator.accumulate(model.no_sync):
+                with accumulator.accumulate(self._dp_no_sync(model)):
                     loss, metrics = model_forward(model, batch)
                     loss.backward()
 
                 if accumulator.sync_gradients:
                     optimizer.step()
                     optimizer.zero_grad()
+                    lr_scheduler.step()
                     completed_steps += 1
 
                     # logging
                     spend_time = time.time() - time_stone
                     time_stone = time.time()
-                    metrics.update({"loss": loss, "spend_time": spend_time})
+                    metrics.update({"loss": loss, "spend_time": spend_time, "lr": lr_scheduler.get_lr()})
                     log(metrics=metrics, step=completed_steps)
 
                     if completed_steps % eval_interval == 0:
@@ -490,4 +516,10 @@ class Trainer:
                         log(metrics=eval_metrics, commit=False)
 
                     if completed_steps % checkpoint_interval == 0:
-                        save_checkpoint(model, optimizer, lr_scheduler)
+                        save_checkpoint(
+                            ckpt_dir=ckpt_dir,
+                            step=completed_steps,
+                            model=model,
+                            optimizer=optimizer,
+                            lr_scheduler=lr_scheduler,
+                        )

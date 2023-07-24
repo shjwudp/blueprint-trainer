@@ -1,7 +1,8 @@
 # training gpt2 from sratch
 
 ```bash
-python train_gpt2.py
+python train_gpt2.py \
+    --blueprint_filepath ./blueprints/gpt2_blueprint.yaml
 ```
 
 # data parallel example
