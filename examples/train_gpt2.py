@@ -8,7 +8,6 @@ import argparse
 
 import torch
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, default_data_collator
-
 from blueprint_trainer import Trainer
 
 

@@ -10,7 +10,8 @@ blueprint:
     num_warmup_steps: 100
 
   dataset:
-  - path: "wikitext"
+  - load_dataset: true
+    path: "wikitext"
     name: "wikitext-103-v1"
 
   batch_size_plan:
