@@ -11,7 +11,6 @@ from blueprint_trainer.system import (
     GPUUtilization,
 )
 
-from collections import namedtuple
 import time
 import yaml
 import copy
@@ -23,83 +22,26 @@ import torch
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader, Subset
 import tabulate
-
-
-Blueprint = namedtuple(
-    "Blueprint",
-    [
-        "model",
-        "optimizer",
-        "learning_rate",
-        "dataset",
-        "batch_size_plan",
-        "checkpoint",
-        "evaluation",
-    ]
-)
-
-LearningRateConfig = namedtuple(
-    "LearningRateConfig", ["base", "scheduler", "num_warmup_steps"]
-)
-
-BatchSizePlanItem = namedtuple(
-    "BatchSizePlanItem", ["batch_size", "training_nsteps"]
-)
-
-CheckpointConfig = namedtuple(
-    "CheckpointConfig", ["path", "interval_by_step", "interval_by_time"]
-)
-
-EvaluationConfig = namedtuple(
-    "EvaluationConfig", ["interval_by_step", "interval_by_time"]
-)
-
-
-class BlueprintDetail:
-    pass
+from omegaconf import OmegaConf
 
 
 class Trainer:
     def __init__(
         self,
-        blueprint_json=None,
         blueprint_text=None,
         blueprint_filepath=None,
     ) -> None:
-        if blueprint_json:
-            pass
-        elif blueprint_text:
-            blueprint_json = yaml.load(blueprint_text, Loader=yaml.Loader)
+        if blueprint_text:
+            blueprint_conf = OmegaConf.create(blueprint_text)
         elif blueprint_filepath:
-            blueprint_json = yaml.load(open(blueprint_filepath).read(), Loader=yaml.Loader)
+            blueprint_conf = OmegaConf.load(blueprint_filepath)
 
-        j = blueprint_json["blueprint"]
-        self.blueprint = Blueprint(
-            model=j["model"],
-            optimizer=j["optimizer"],
-            learning_rate=LearningRateConfig(
-                base=float(j["learning_rate"]["base"]),
-                scheduler=j["learning_rate"]["scheduler"],
-                num_warmup_steps=j["learning_rate"]["num_warmup_steps"],
-            ),
-            dataset=[dataset_config for dataset_config in j["dataset"]],
-            batch_size_plan=[
-                BatchSizePlanItem(
-                    batch_size=x["batch_size"],
-                    training_nsteps=x["training_nsteps"]
-                ) for x in j["batch_size_plan"]
-            ],
-            checkpoint=CheckpointConfig(
-                path=j["checkpoint"]["path"],
-                interval_by_step=j["checkpoint"]["interval_by_step"],
-                interval_by_time=j["checkpoint"]["interval_by_time"],
-            ),
-            evaluation=EvaluationConfig(
-                interval_by_step=j["evaluation"]["interval_by_step"],
-                interval_by_time=j["evaluation"]["interval_by_time"],
-            )
-        )
-        self.blueprint_detail = BlueprintDetail()
+        self.blueprint = blueprint_conf.blueprint
+        self.blueprint_detail = OmegaConf.create({
+            "total_training_steps": None,
+            "time_cost_of_each_stage": None,
+            "gpu_util_at_each_stage": None,
+        })
 
         self.blueprint_completed_testing = False
 
@@ -178,8 +120,8 @@ class Trainer:
         plt.scatter(learning_rates)
         plt.title("learning rate")
         plt.show()
-        print(self.blueprint._asdict())
-        print(vars(self.blueprint_detail))
+        print(Omegaconf.to_yaml(self.blueprint))
+        print(Omegaconf.to_yaml(self.blueprint_detail))
 
     def _get_dataloader(self, dataset, batch_size):
         dl_kwargs = copy.copy(self.dataloader_kwargs)

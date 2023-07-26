@@ -18,8 +18,11 @@ setup(
     ],
     install_requires=[
         "torch",
-        "PyYAML",
         "tabulate",
         "plotext",
+        "datasets",
+        "transformers",
+        "wandb",
+        "omegaconf",
     ],
 )
