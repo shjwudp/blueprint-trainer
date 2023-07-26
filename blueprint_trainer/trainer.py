@@ -120,8 +120,8 @@ class Trainer:
         plt.scatter(learning_rates)
         plt.title("learning rate")
         plt.show()
-        print(Omegaconf.to_yaml(self.blueprint))
-        print(Omegaconf.to_yaml(self.blueprint_detail))
+        print(OmegaConf.to_yaml(self.blueprint))
+        print(OmegaConf.to_yaml(self.blueprint_detail))
 
     def _get_dataloader(self, dataset, batch_size):
         dl_kwargs = copy.copy(self.dataloader_kwargs)
