@@ -1,6 +1,6 @@
 # blueprint-trainer
 
-This is an experimental project, this is a perfect deep learning trainer. If all goes well, hahaha.
+This project provides a scaffolding for sequence model training research.
 
 ## About Blueprint
 
