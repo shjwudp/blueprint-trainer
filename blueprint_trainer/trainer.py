@@ -12,7 +12,6 @@ from blueprint_trainer.system import (
 )
 
 import time
-import yaml
 import copy
 import os
 import random
@@ -73,6 +72,9 @@ class Trainer:
         blueprint = self.blueprint
 
         for plan in blueprint.batch_size_plan:
+            self.n_step_of_gradient_accumulation.append(
+                plan.get("n_step_of_gradient_accumulation", 1)
+            )
             bs, train_step = plan.batch_size, plan.training_nsteps
             if train_step == -1 or bs*train_step > len(train_dataset):
                 dataloader = self._get_dataloader(train_dataset, bs)
@@ -85,7 +87,10 @@ class Trainer:
             dataloader = self._get_dataloader(stage_dataset, bs)
             n_dataloader.append(dataloader)
         self.n_dataloader = n_dataloader
-        self.n_step_of_gradient_accumulation = [1]*len(self.n_dataloader)
+        self.n_step_of_gradient_accumulation = [
+            plan.get("n_step_of_gradient_accumulation", 1)
+            for plan in blueprint.batch_size_plan
+        ]
         self.blueprint_detail.total_training_steps = sum(len(dl)//step for dl, step in zip(self.n_dataloader, self.n_step_of_gradient_accumulation))
 
         # checkpoint functions check and alert
